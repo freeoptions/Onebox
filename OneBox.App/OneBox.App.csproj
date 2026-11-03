@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>OneBox</AssemblyName>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\onebox.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets\onebox.png" />
+    <ProjectReference Include="..\OneBox.Core\OneBox.Core.csproj" />
+    <ProjectReference Include="..\OneBox.Storage\OneBox.Storage.csproj" />
+    <ProjectReference Include="..\OneBox.Providers\OneBox.Providers.csproj" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
+  </ItemGroup>
+</Project>

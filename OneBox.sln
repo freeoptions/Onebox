@@ -1,0 +1,46 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OneBox.Core", "OneBox.Core\OneBox.Core.csproj", "{8717F368-E3E3-43CB-A4C1-A6F946D0EE94}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OneBox.Storage", "OneBox.Storage\OneBox.Storage.csproj", "{3EA211FE-79DB-493D-A1DF-DB502E7216F5}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OneBox.Providers", "OneBox.Providers\OneBox.Providers.csproj", "{996F8DD9-25B8-4FC3-8C3B-333E138B7735}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OneBox.App", "OneBox.App\OneBox.App.csproj", "{81C1B7A1-3D1E-425A-A322-CB18212F59AD}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OneBox.Tests", "OneBox.Tests\OneBox.Tests.csproj", "{F1C6C565-31FE-4723-A70F-8C626D15C8F7}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8717F368-E3E3-43CB-A4C1-A6F946D0EE94}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8717F368-E3E3-43CB-A4C1-A6F946D0EE94}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8717F368-E3E3-43CB-A4C1-A6F946D0EE94}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8717F368-E3E3-43CB-A4C1-A6F946D0EE94}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3EA211FE-79DB-493D-A1DF-DB502E7216F5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3EA211FE-79DB-493D-A1DF-DB502E7216F5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3EA211FE-79DB-493D-A1DF-DB502E7216F5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3EA211FE-79DB-493D-A1DF-DB502E7216F5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{996F8DD9-25B8-4FC3-8C3B-333E138B7735}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{996F8DD9-25B8-4FC3-8C3B-333E138B7735}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{996F8DD9-25B8-4FC3-8C3B-333E138B7735}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{996F8DD9-25B8-4FC3-8C3B-333E138B7735}.Release|Any CPU.Build.0 = Release|Any CPU
+		{81C1B7A1-3D1E-425A-A322-CB18212F59AD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{81C1B7A1-3D1E-425A-A322-CB18212F59AD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{81C1B7A1-3D1E-425A-A322-CB18212F59AD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{81C1B7A1-3D1E-425A-A322-CB18212F59AD}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F1C6C565-31FE-4723-A70F-8C626D15C8F7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F1C6C565-31FE-4723-A70F-8C626D15C8F7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F1C6C565-31FE-4723-A70F-8C626D15C8F7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F1C6C565-31FE-4723-A70F-8C626D15C8F7}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

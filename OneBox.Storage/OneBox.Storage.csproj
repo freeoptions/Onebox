@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\OneBox.Core\OneBox.Core.csproj" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
+    <PackageReference Include="PinyinNet" Version="1.0.0" />
+  </ItemGroup>
+</Project>

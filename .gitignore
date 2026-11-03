@@ -1,0 +1,11 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.db
+*.db-*
+*.db.backup.*
+*.log
+__pycache__/
+google-client-id.txt

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\OneBox.Core\OneBox.Core.csproj" />
+    <ProjectReference Include="..\OneBox.Storage\OneBox.Storage.csproj" />
+    <PackageReference Include="MSTest" Version="4.4.0" />
+  </ItemGroup>
+</Project>
