@@ -12,6 +12,7 @@ namespace OneBox.Providers;
 
 public sealed class GmailProvider(string clientId, string clientSecret, ICredentialVault vault) : IMailProvider
 {
+    static GmailProvider() => MailEncoding.Initialize();
     private const string Api = "https://gmail.googleapis.com/gmail/v1/users/me";
     private const string Scope = "https://www.googleapis.com/auth/gmail.modify";
     private readonly HttpClient _http = new();
@@ -172,19 +173,18 @@ public sealed class GmailProvider(string clientId, string clientSecret, ICredent
 
     public async Task<MailMessage> GetMessageAsync(Account account, string secret, string serverId, CancellationToken ct)
     {
-        using var item = await GetAsync($"{Api}/messages/{Uri.EscapeDataString(serverId)}?format=full", secret, ct, account.Id);
+        using var item = await GetAsync($"{Api}/messages/{Uri.EscapeDataString(serverId)}?format=raw", secret, ct, account.Id);
         var root = item.RootElement;
-        var labels = root.GetProperty("labelIds").EnumerateArray().Select(label => label.GetString()).ToHashSet();
-        var headers = ReadHeaders(root.GetProperty("payload"));
-        var bodies = new Dictionary<string, string>();
-        ReadParts(root.GetProperty("payload"), bodies);
-        var from = headers.GetValueOrDefault("From", "");
-        return new MailMessage(account.Id, serverId, "INBOX", headers.GetValueOrDefault("Subject", "（无主题）"),
-            from, from, headers.GetValueOrDefault("To", ""),
+        var labelSet = root.GetProperty("labelIds").EnumerateArray().Select(label => label.GetString()).ToHashSet();
+        using var rawStream = new MemoryStream(FromBase64Url(root.GetProperty("raw").GetString()!));
+        using var mime = await MimeMessage.LoadAsync(rawStream, ct);
+        var htmlBody = await InlineImages.ResolveAsync(mime, account.Id, serverId, InlineImages.CacheDirectory, ct);
+        var sender = mime.From.Mailboxes.FirstOrDefault();
+        return new MailMessage(account.Id, serverId, "INBOX", mime.Subject ?? "（无主题）",
+            sender?.Name ?? "", sender?.Address ?? "", string.Join(", ", mime.To.Mailboxes.Select(mailbox => mailbox.Address)),
             DateTimeOffset.FromUnixTimeMilliseconds(long.Parse(root.GetProperty("internalDate").GetString()!)),
             root.TryGetProperty("snippet", out var snippet) ? snippet.GetString() ?? "" : "",
-            !labels.Contains("UNREAD"), labels.Contains("STARRED"), false,
-            bodies.GetValueOrDefault("text/plain"), bodies.GetValueOrDefault("text/html"));
+            !labelSet.Contains("UNREAD"), labelSet.Contains("STARRED"), mime.Attachments.Any(), mime.TextBody, htmlBody);
     }
 
     public async Task SetFlagsAsync(Account account, string secret, string serverId,
@@ -297,16 +297,6 @@ public sealed class GmailProvider(string clientId, string clientSecret, ICredent
             }
         }
         return _accessToken;
-    }
-
-    private static void ReadParts(JsonElement part, Dictionary<string, string> bodies)
-    {
-        var type = part.GetProperty("mimeType").GetString();
-        if (part.TryGetProperty("body", out var body) && body.TryGetProperty("data", out var data)
-            && type is "text/plain" or "text/html")
-            bodies[type] = Encoding.UTF8.GetString(FromBase64Url(data.GetString()!));
-        if (part.TryGetProperty("parts", out var children))
-            foreach (var child in children.EnumerateArray()) ReadParts(child, bodies);
     }
 
     private static void CollectAttachments(JsonElement part, Guid accountId, string messageId,

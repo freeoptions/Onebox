@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
+    <InternalsVisibleTo Include="OneBox.Tests" />
     <ProjectReference Include="..\OneBox.Core\OneBox.Core.csproj" />
     <PackageReference Include="MailKit" Version="4.17.0" />
   </ItemGroup>

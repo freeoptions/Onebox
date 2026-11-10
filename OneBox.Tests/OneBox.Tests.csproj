@@ -6,6 +6,13 @@
   <ItemGroup>
     <ProjectReference Include="..\OneBox.Core\OneBox.Core.csproj" />
     <ProjectReference Include="..\OneBox.Storage\OneBox.Storage.csproj" />
+    <ProjectReference Include="..\OneBox.App\OneBox.App.csproj" />
     <PackageReference Include="MSTest" Version="4.4.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\OneBox.App\App.xaml" Link="Ui\App.xaml" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\OneBox.App\MainWindow.xaml" Link="Ui\MainWindow.xaml" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\OneBox.App\AccountDialog.xaml" Link="Ui\AccountDialog.xaml" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\OneBox.App\ComposeDialog.xaml" Link="Ui\ComposeDialog.xaml" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

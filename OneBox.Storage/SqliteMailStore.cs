@@ -148,7 +148,7 @@ public sealed class SqliteMailStore(string databasePath) : IMailStore
     }
 
     public async Task<IReadOnlyList<MailMessage>> GetMessagesAsync(Guid? accountId, string? folderId,
-        string? query, int limit = 200, CancellationToken cancellationToken = default)
+        string? query, int limit = 200, bool starredOnly = false, CancellationToken cancellationToken = default)
     {
         await using var connection = Open();
         await connection.OpenAsync(cancellationToken);
@@ -159,6 +159,7 @@ public sealed class SqliteMailStore(string databasePath) : IMailStore
             FROM messages
             WHERE ($account IS NULL OR account_id=$account)
               AND ($folder IS NULL OR folder_id=$folder)
+              AND ($starredOnly=0 OR is_starred=1)
               AND ($query IS NULL OR subject LIKE $query OR from_name LIKE $query
                    OR from_address LIKE $query OR to_addresses LIKE $query OR text_body LIKE $query
                    OR search_pinyin LIKE $pinyinQuery OR search_initials LIKE $pinyinQuery)
@@ -166,6 +167,7 @@ public sealed class SqliteMailStore(string databasePath) : IMailStore
             """;
         command.Parameters.AddWithValue("$account", accountId?.ToString("N") is string id ? id : DBNull.Value);
         command.Parameters.AddWithValue("$folder", (object?)folderId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$starredOnly", starredOnly);
         command.Parameters.AddWithValue("$query", string.IsNullOrWhiteSpace(query) ? DBNull.Value : $"%{query}%");
         command.Parameters.AddWithValue("$pinyinQuery", string.IsNullOrWhiteSpace(query)
             ? DBNull.Value : $"%{MailRules.NormalizeSearch(query)}%");

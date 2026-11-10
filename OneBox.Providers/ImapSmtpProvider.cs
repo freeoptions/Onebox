@@ -10,6 +10,7 @@ namespace OneBox.Providers;
 
 public sealed class ImapSmtpProvider(ProviderKind kind) : IMailProvider
 {
+    static ImapSmtpProvider() => MailEncoding.Initialize();
     public ProviderKind Kind { get; } = kind is ProviderKind.Qq or ProviderKind.NetEase
         ? kind : throw new ArgumentOutOfRangeException(nameof(kind));
     public long? CurrentUidValidity { get; private set; }
@@ -35,6 +36,16 @@ public sealed class ImapSmtpProvider(ProviderKind kind) : IMailProvider
         {
             await client.ConnectAsync(endpoint.Imap, endpoint.ImapPort, SecureSocketOptions.SslOnConnect, ct);
             await client.AuthenticateAsync(account.Address, secret, ct);
+            if (Kind == ProviderKind.NetEase && client.Capabilities.HasFlag(ImapCapabilities.Id))
+            {
+                await client.IdentifyAsync(new ImapImplementation
+                {
+                    Name = "OneBox",
+                    Version = typeof(ImapSmtpProvider).Assembly.GetName().Version?.ToString(),
+                    Vendor = "OneBox",
+                    SupportUrl = "https://github.com/freeoptions/Onebox"
+                }, ct);
+            }
             return client;
         }
         catch
@@ -93,19 +104,19 @@ public sealed class ImapSmtpProvider(ProviderKind kind) : IMailProvider
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadOnly, ct);
         CurrentUidValidity = inbox.UidValidity;
-        var uids = await inbox.SearchAsync(SearchQuery.DeliveredAfter(since.UtcDateTime.Date), ct);
-        var ordered = uids.OrderByDescending(uid => uid.Id).ToList();
+        var uidList = await inbox.SearchAsync(SearchQuery.DeliveredAfter(since.UtcDateTime.Date), ct);
+        var orderedUidList = uidList.OrderByDescending(uid => uid.Id).ToList();
         var fullScan = cursor is null || cursor.UidValidity != CurrentUidValidity;
-        var recent = fullScan ? ordered : ordered.Take(300)
-            .Concat(ordered.Where(uid => uid.Id > (cursor!.HighestUid ?? 0)))
+        var recentUidList = fullScan ? orderedUidList : orderedUidList.Take(300)
+            .Concat(orderedUidList.Where(uid => uid.Id > (cursor!.HighestUid ?? 0)))
             .Distinct().ToList();
-        if (recent.Count == 0) return [];
-        var result = new List<MailMessage>(recent.Count);
-        foreach (var batch in recent.Chunk(250))
+        if (recentUidList.Count == 0) return [];
+        var messageList = new List<MailMessage>(recentUidList.Count);
+        foreach (var uidBatchList in CreateFetchBatches(recentUidList))
         {
-            var summaries = await inbox.FetchAsync(batch, MessageSummaryItems.Envelope |
+            var summaryList = await inbox.FetchAsync(uidBatchList, MessageSummaryItems.Envelope |
                 MessageSummaryItems.Flags | MessageSummaryItems.InternalDate | MessageSummaryItems.BodyStructure, ct);
-            result.AddRange(summaries.Select(summary => new MailMessage(
+            messageList.AddRange(summaryList.Select(summary => new MailMessage(
                 account.Id, summary.UniqueId.Id.ToString(), "INBOX",
                 summary.Envelope?.Subject ?? "（无主题）",
                 summary.Envelope?.From.Mailboxes.FirstOrDefault()?.Name ?? "",
@@ -117,7 +128,14 @@ public sealed class ImapSmtpProvider(ProviderKind kind) : IMailProvider
                 summary.Attachments?.Any() ?? false)));
         }
         await client.DisconnectAsync(true, ct);
-        return result;
+        return messageList;
+    }
+
+    internal static IEnumerable<IList<UniqueId>> CreateFetchBatches(IEnumerable<UniqueId> uidList)
+    {
+        // 使用正序范围和短批次，避免服务端拒绝倒序范围或截断较长的UID参数。
+        foreach (var uidBatch in uidList.Distinct().OrderBy(uid => uid.Id).Chunk(50))
+            yield return new UniqueIdSet(uidBatch, SortOrder.Ascending);
     }
 
     public async Task<MailMessage> GetMessageAsync(Account account, string secret, string serverId, CancellationToken ct)
@@ -126,13 +144,14 @@ public sealed class ImapSmtpProvider(ProviderKind kind) : IMailProvider
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadOnly, ct);
         var uid = new UniqueId(uint.Parse(serverId));
-        var mime = await inbox.GetMessageAsync(uid, ct);
+        using var mime = await inbox.GetMessageAsync(uid, ct);
+        var htmlBody = await InlineImages.ResolveAsync(mime, account.Id, serverId, InlineImages.CacheDirectory, ct);
         var result = new MailMessage(account.Id, serverId, "INBOX", mime.Subject ?? "（无主题）",
             mime.From.Mailboxes.FirstOrDefault()?.Name ?? "",
             mime.From.Mailboxes.FirstOrDefault()?.Address ?? "",
             string.Join(", ", mime.To.Mailboxes.Select(mailbox => mailbox.Address)),
             mime.Date, mime.TextBody?.Replace('\n', ' ').Trim() ?? "",
-            false, false, mime.Attachments.Any(), mime.TextBody, mime.HtmlBody);
+            false, false, mime.Attachments.Any(), mime.TextBody, htmlBody);
         await client.DisconnectAsync(true, ct);
         return result;
     }
@@ -162,12 +181,13 @@ public sealed class ImapSmtpProvider(ProviderKind kind) : IMailProvider
     {
         using var client = await OpenImapAsync(account, secret, ct);
         await client.Inbox.OpenAsync(FolderAccess.ReadOnly, ct);
-        var mime = await client.Inbox.GetMessageAsync(new UniqueId(uint.Parse(serverId)), ct);
-        var result = mime.Attachments.OfType<MimePart>().Select((part, index) =>
-            new MailAttachment(account.Id, serverId, index.ToString(), part.FileName ?? "附件",
-                part.ContentType.MimeType, part.Content?.Stream?.Length ?? 0)).ToArray();
+        using var mime = await client.Inbox.GetMessageAsync(new UniqueId(uint.Parse(serverId)), ct);
+        var attachmentList = mime.Attachments.Select((part, index) =>
+            new MailAttachment(account.Id, serverId, index.ToString(),
+                part is MimePart filePart ? filePart.FileName ?? "附件" : part.ContentDisposition?.FileName ?? "邮件附件.eml",
+                part.ContentType.MimeType, part is MimePart sizedPart ? sizedPart.Content?.Stream?.Length ?? 0 : 0)).ToList();
         await client.DisconnectAsync(true, ct);
-        return result;
+        return attachmentList;
     }
 
     public async Task DownloadAttachmentAsync(Account account, string secret, MailAttachment attachment,
@@ -176,12 +196,9 @@ public sealed class ImapSmtpProvider(ProviderKind kind) : IMailProvider
         if (account.Id != attachment.AccountId) throw new InvalidOperationException("附件账号不匹配");
         using var client = await OpenImapAsync(account, secret, ct);
         await client.Inbox.OpenAsync(FolderAccess.ReadOnly, ct);
-        var mime = await client.Inbox.GetMessageAsync(new UniqueId(uint.Parse(attachment.MessageServerId)), ct);
-        var part = mime.Attachments.OfType<MimePart>().ElementAt(int.Parse(attachment.PartId));
-        if (part.Content is null) throw new InvalidDataException("附件内容为空");
-        await using var output = new FileStream(outputPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-        try { await part.Content.DecodeToAsync(output, ct); }
-        catch { output.Close(); File.Delete(outputPath); throw; }
+        using var mime = await client.Inbox.GetMessageAsync(new UniqueId(uint.Parse(attachment.MessageServerId)), ct);
+        var part = mime.Attachments.ElementAt(int.Parse(attachment.PartId));
+        await MimeAttachments.SaveAsync(part, outputPath, ct);
         await client.DisconnectAsync(true, ct);
     }
 

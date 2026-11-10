@@ -1,0 +1,61 @@
+<Window x:Class="OneBox.App.SettingsWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:OneBox.App"
+        Title="设置" Width="680" Height="680" MinWidth="540" MinHeight="440" Style="{StaticResource AppWindow}"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False" Background="{StaticResource CanvasBrush}">
+  <Grid>
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel Margin="28,24,28,20">
+      <TextBlock Text="设置" FontSize="{DynamicResource FontSize25}" FontWeight="SemiBold"/>
+      <TextBlock Text="按你的习惯阅读和收纳邮件。" Foreground="{StaticResource MutedBrush}" Margin="0,8,0,0" TextWrapping="Wrap"/>
+    </StackPanel>
+    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+      <StackPanel Margin="28,0,28,20">
+        <Border Background="{StaticResource SurfaceBrush}" CornerRadius="{StaticResource PanelRadius}" Padding="20" Margin="0,0,0,16">
+          <StackPanel>
+            <TextBlock Text="显示" FontSize="{DynamicResource FontSize14}" FontWeight="SemiBold" Margin="0,0,0,16"/>
+            <Grid>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+              <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
+                <TextBlock Text="字体大小"/>
+                <TextBlock Text="界面和邮件正文同步调整" FontSize="{DynamicResource FontSize12}" Foreground="{StaticResource MutedBrush}" Margin="0,5,0,0" TextWrapping="Wrap"/>
+              </StackPanel>
+              <ComboBox Grid.Column="1" x:Name="FontScaleBox" ItemsSource="{x:Static local:App.FontScalePercentList}"
+                        SelectionChanged="OnFontScaleChanged" MinWidth="110" VerticalAlignment="Center" AutomationProperties.Name="字体大小">
+                <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding StringFormat={}{0}%}"/></DataTemplate></ComboBox.ItemTemplate>
+              </ComboBox>
+            </Grid>
+            <Border Background="{StaticResource CanvasBrush}" CornerRadius="{StaticResource ControlRadius}" Padding="16" Margin="0,18,0,0">
+              <StackPanel>
+                <TextBlock Text="阅读更舒适，重要信息更清晰" FontSize="{DynamicResource FontSize14}" TextWrapping="Wrap"/>
+                <TextBlock Text="OneBox · 0123456789" Foreground="{StaticResource MutedBrush}" Margin="0,7,0,0"/>
+              </StackPanel>
+            </Border>
+          </StackPanel>
+        </Border>
+        <Border Background="{StaticResource SurfaceBrush}" CornerRadius="{StaticResource PanelRadius}" Padding="20">
+          <StackPanel>
+            <TextBlock Text="邮件阅读与下载" FontSize="{DynamicResource FontSize14}" FontWeight="SemiBold" Margin="0,0,0,16"/>
+            <CheckBox x:Name="RemoteImagesBox" Content="自动加载远程图片" Click="OnRemoteImagesChanged"/>
+            <TextBlock Text="对所有账号生效，关闭后可为单封邮件显示图片。" FontSize="{DynamicResource FontSize12}"
+                       Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,8,0,18"/>
+            <Border Background="{StaticResource LineBrush}" Height="1" Margin="0,0,0,18"/>
+            <TextBlock Text="附件下载位置"/>
+            <TextBlock x:Name="DownloadDirectoryLabel" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}"
+                       FontSize="{DynamicResource FontSize12}" Margin="0,8,0,10"/>
+            <WrapPanel>
+              <Button Content="选择文件夹…" Click="OnChooseDownloadDirectory" Style="{StaticResource OutlineButton}" Margin="0,0,8,4"/>
+              <Button Content="每次下载时选择" Click="OnClearDownloadDirectory" Margin="0,0,0,4"/>
+            </WrapPanel>
+          </StackPanel>
+        </Border>
+      </StackPanel>
+    </ScrollViewer>
+    <Border Grid.Row="2" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="28,14">
+      <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <TextBlock Text="修改后立即生效并保存" FontSize="{DynamicResource FontSize12}" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,16,0"/>
+        <Button Grid.Column="1" Content="关闭" Click="OnClose" IsCancel="True" Style="{StaticResource AccentButton}" Padding="22,8"/>
+      </Grid>
+    </Border>
+  </Grid>
+</Window>
