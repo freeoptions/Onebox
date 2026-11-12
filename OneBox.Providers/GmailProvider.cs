@@ -10,12 +10,12 @@ using OneBox.Core;
 
 namespace OneBox.Providers;
 
-public sealed class GmailProvider(string clientId, string clientSecret, ICredentialVault vault) : IMailProvider
+public sealed class GmailProvider(string clientId, string clientSecret, ICredentialVault vault, MailProxy? proxy = null) : IMailProvider
 {
     static GmailProvider() => MailEncoding.Initialize();
     private const string Api = "https://gmail.googleapis.com/gmail/v1/users/me";
     private const string Scope = "https://www.googleapis.com/auth/gmail.modify";
-    private readonly HttpClient _http = new();
+    private readonly HttpClient _http = new(new HttpClientHandler { Proxy = proxy ?? new MailProxy() });
     private string? _accessToken;
     private string? _refreshFingerprint;
     private DateTimeOffset _accessTokenExpires;

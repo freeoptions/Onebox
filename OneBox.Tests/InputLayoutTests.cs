@@ -36,13 +36,15 @@ public sealed class InputLayoutTests
                         new XElement(presentation + "Grid.Resources", resources), content);
                     var grid = (Grid)XamlReader.Parse(wrapper.ToString());
                     TextElement.SetFontFamily(grid, new FontFamily("Segoe UI, Microsoft YaHei UI"));
-                    foreach (var mode in fileName == "AccountDialog.xaml" ? new[] { "standard", "gmail" } : new[] { "compose" })
+                    foreach (var mode in fileName == "AccountDialog.xaml" ? new[] { "standard", "gmail-imap", "gmail" } : new[] { "compose" })
                     {
                         if (fileName == "AccountDialog.xaml")
                         {
-                            ((StackPanel)grid.FindName("StandardFieldsPanel")).Visibility = mode == "standard" ? Visibility.Visible : Visibility.Collapsed;
+                            ((StackPanel)grid.FindName("StandardFieldsPanel")).Visibility = mode != "gmail" ? Visibility.Visible : Visibility.Collapsed;
                             ((StackPanel)grid.FindName("GmailPanel")).Visibility = mode == "gmail" ? Visibility.Visible : Visibility.Collapsed;
                             ((StackPanel)grid.FindName("GoogleSetupPanel")).Visibility = Visibility.Visible;
+                            ((Button)grid.FindName("AppPasswordButton")).Visibility = mode == "gmail-imap" ? Visibility.Visible : Visibility.Collapsed;
+                            ((TextBlock)grid.FindName("SecretLabel")).Text = mode == "gmail-imap" ? "应用专用密码" : "客户端授权码";
                         }
                         foreach (var fontSize in new[] { 13d, 16d, 19.5d })
                         {

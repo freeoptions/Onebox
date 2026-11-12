@@ -78,6 +78,14 @@ public sealed class LayoutTests
                             Assert.AreEqual(Visibility.Visible, readerPage.Visibility);
                             Assert.IsGreaterThanOrEqualTo(700d, readerPage.ActualWidth, "阅读页没有占满主区域");
                             Assert.IsGreaterThan(180d, readerPage.ActualHeight, "阅读页高度不足");
+                            var plainBody = (TextBox)grid.FindName("PlainBody");
+                            var bodyPosition = plainBody.TranslatePoint(new Point(), readerPage);
+                            var bodyHeight = plainBody.ActualHeight;
+                            viewModel.IsBodyLoading = true;
+                            grid.UpdateLayout();
+                            Assert.AreEqual(bodyPosition, plainBody.TranslatePoint(new Point(), readerPage), "加载提示不应推动正文位置");
+                            Assert.AreEqual(bodyHeight, plainBody.ActualHeight, "加载提示不应改变正文区域高度");
+                            viewModel.IsBodyLoading = false;
                             var attachmentButton = (Button)grid.FindName("AttachmentButton");
                             viewModel.IsDownloadingAttachments = true;
                             grid.UpdateLayout();
@@ -108,6 +116,16 @@ public sealed class LayoutTests
                                 viewModel.Messages[0].UpdateFlags(true, true);
                                 grid.UpdateLayout();
                                 Assert.AreSame(grid.Resources["FavoriteIcon"], starImage.Source, "星标没有即时更新");
+                                var row = viewModel.Messages[0];
+                                var container = (ListBoxItem)messageList.ItemContainerGenerator.ContainerFromItem(row);
+                                var rowHeight = container.ActualHeight;
+                                var multilineBody = string.Join("\r\n", Enumerable.Repeat("邮件正文与详情", 20));
+                                row.CacheBody(row.Message with { TextBody = multilineBody, Preview = multilineBody.Replace('\n', ' ') });
+                                grid.Measure(new Size(width, 640));
+                                grid.Arrange(new Rect(0, 0, width, 640));
+                                grid.UpdateLayout();
+                                Assert.AreEqual(rowHeight, container.ActualHeight, 0.5, "读取正文后，含回车的预览不应撑高列表行");
+                                Assert.AreEqual(multilineBody, row.Message.TextBody, "列表显示处理不应修改完整正文");
                             }
                         }
                     }

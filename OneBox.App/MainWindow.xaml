@@ -27,7 +27,8 @@
             </TextBlock>
           </Grid>
         </Border>
-        <Border Grid.Column="2" x:Name="NoticePanel" CornerRadius="8" Padding="12,8" VerticalAlignment="Center">
+        <Border Grid.Column="2" x:Name="NoticePanel" CornerRadius="8" Padding="12,8" VerticalAlignment="Center"
+                MouseEnter="OnNoticeHistoryMouseEnter" MouseLeave="OnNoticeHistoryMouseLeave">
           <Border.Style><Style TargetType="Border"><Setter Property="Background" Value="{StaticResource CanvasBrush}"/>
             <Style.Triggers>
               <DataTrigger Binding="{Binding NoticeKind}" Value="成功"><Setter Property="Background" Value="#EAF5EF"/></DataTrigger>
@@ -35,7 +36,7 @@
               <DataTrigger Binding="{Binding NoticeKind}" Value="告警"><Setter Property="Background" Value="{StaticResource WarningSurfaceBrush}"/></DataTrigger>
             </Style.Triggers>
           </Style></Border.Style>
-          <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <TextBlock Text="{Binding NoticeKind}" FontSize="{DynamicResource FontSize12}" FontWeight="SemiBold" Margin="0,0,10,0" VerticalAlignment="Center">
               <TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
                 <Style.Triggers>
@@ -46,8 +47,8 @@
               </Style></TextBlock.Style>
             </TextBlock>
             <TextBlock Grid.Column="1" Text="{Binding NoticeText}" FontSize="{DynamicResource FontSize12}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
-            <Button Grid.Column="2" x:Name="NoticeHistoryButton" Content="›" Click="OnNextNotice"
-                    MouseEnter="OnNoticeHistoryMouseEnter" MouseLeave="OnNoticeHistoryMouseLeave"
+            <TextBlock Grid.Column="2" Text="{Binding NoticeTimeText}" FontSize="{DynamicResource FontSize11}" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="12,0,0,0"/>
+            <Button Grid.Column="3" x:Name="NoticeHistoryButton" Content="›" Click="OnShowNoticeHistory"
                     AutomationProperties.Name="查看最近20条日志" Padding="8,0" Margin="8,0,0,0"/>
             <Popup x:Name="NoticeHistoryPopup" PlacementTarget="{Binding ElementName=NoticePanel}" Placement="Bottom"
                    AllowsTransparency="True" StaysOpen="True" VerticalOffset="6">
@@ -79,6 +80,7 @@
                             </Style.Triggers>
                           </Style></Border.Style>
                           <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                             <TextBlock Text="{Binding Kind}" FontWeight="SemiBold" Margin="0,0,12,0">
                               <TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
                                 <Style.Triggers>
@@ -89,6 +91,7 @@
                               </Style></TextBlock.Style>
                             </TextBlock>
                             <TextBlock Grid.Column="1" Text="{Binding Text}" TextWrapping="Wrap" Foreground="{StaticResource InkBrush}"/>
+                            <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding TimeText}" Foreground="{StaticResource MutedBrush}" FontSize="{DynamicResource FontSize11}" Margin="0,5,0,0"/>
                           </Grid>
                         </Border>
                       </DataTemplate></ItemsControl.ItemTemplate>
@@ -154,7 +157,7 @@
           <ListBox x:Name="AccountsList" ItemsSource="{Binding Accounts}" SelectionChanged="OnAccountSelected" BorderThickness="0" Background="Transparent"
                    ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto" ItemContainerStyle="{StaticResource SidebarItem}">
             <ListBox.ItemTemplate><DataTemplate>
-              <Grid Margin="10,11"><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+              <Grid Margin="10,11"><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/><ColumnDefinition Width="28"/></Grid.ColumnDefinitions>
                 <Border Width="30" Height="30" Background="{StaticResource SurfaceBrush}" CornerRadius="8" VerticalAlignment="Top">
                   <TextBlock Text="&#xE77B;" Style="{StaticResource Icon}" Foreground="{StaticResource AccentBrush}" FontSize="14"/>
                 </Border>
@@ -170,6 +173,11 @@
                     </Style></TextBlock.Style>
                   </TextBlock>
                 </StackPanel>
+                <Button Grid.Column="2" Click="OnRefreshAccount" Width="24" Height="26" Padding="0" Margin="4,0,0,0"
+                        VerticalAlignment="Center" Focusable="False" ToolTip="刷新此账号的邮件" AutomationProperties.Name="刷新此账号的邮件"
+                        IsEnabled="{Binding DataContext.CanSync, RelativeSource={RelativeSource AncestorType={x:Type ListBox}}}">
+                  <TextBlock Text="&#xE72C;" Style="{StaticResource Icon}" FontSize="13" Foreground="{StaticResource AccentBrush}"/>
+                </Button>
               </Grid>
             </DataTemplate></ListBox.ItemTemplate>
           </ListBox>
@@ -229,7 +237,7 @@
           <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="18,12">
             <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
               <WrapPanel>
-                <Button Content="← 返回" Click="OnBackToList" Style="{StaticResource OutlineButton}" Margin="0,0,10,4"/>
+                <Button Content="返回" Click="OnBackToList" Style="{StaticResource OutlineButton}" Margin="0,0,10,4"/>
                 <Button x:Name="ReadButton" Content="标为已读" Click="OnToggleRead" IsEnabled="False" Margin="0,0,2,4"/>
                 <Button x:Name="StarButton" Content="星标" Click="OnToggleStar" IsEnabled="False" Margin="0,0,2,4"/>
                 <Button x:Name="AttachmentButton" Content="{Binding DownloadButtonText}" Click="OnDownloadAttachments" IsEnabled="{Binding CanDownloadAttachments}" Margin="0,0,2,4"/>
@@ -237,8 +245,8 @@
                 <Button x:Name="RemoteImagesButton" Content="显示远程图片" Click="OnShowRemoteImages" Visibility="Collapsed" Margin="0,0,2,4"/>
               </WrapPanel>
               <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top" Margin="8,0,0,0">
-                <Button Content="↑ 上一封" Click="OnPreviousMessage" IsEnabled="{Binding CanGoPrevious}" Padding="10,8"/>
-                <Button Content="↓ 下一封" Click="OnNextMessage" IsEnabled="{Binding CanGoNext}" Padding="10,8"/>
+                <Button Content="上一封" Click="OnPreviousMessage" IsEnabled="{Binding CanGoPrevious}" Padding="10,8"/>
+                <Button Content="下一封" Click="OnNextMessage" IsEnabled="{Binding CanGoNext}" Padding="10,8"/>
               </StackPanel>
             </Grid>
           </Border>
@@ -251,12 +259,12 @@
             </StackPanel>
           </Border>
           <Grid Grid.Row="2" Margin="32,22">
-            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-            <TextBlock Text="正在加载正文…" Foreground="{StaticResource MutedBrush}" FontSize="{DynamicResource FontSize12}" Margin="0,0,0,12" Visibility="{Binding IsBodyLoading, Converter={StaticResource BoolVisibility}}"/>
-            <ScrollViewer Grid.Row="1" x:Name="PlainBody" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-              <TextBlock Text="{Binding SelectedBody}" TextWrapping="Wrap" FontSize="{DynamicResource FontSize14}" LineHeight="{DynamicResource BodyLineHeight}"/>
-            </ScrollViewer>
-            <wv2:WebView2 Grid.Row="1" x:Name="HtmlBody" Visibility="Collapsed"/>
+            <TextBlock Text="正在加载正文…" Foreground="{StaticResource MutedBrush}" FontSize="{DynamicResource FontSize12}" VerticalAlignment="Top" Visibility="{Binding IsBodyLoading, Converter={StaticResource BoolVisibility}}"/>
+            <TextBox x:Name="PlainBody" Text="{Binding SelectedBody, Mode=OneWay}" IsReadOnly="True"
+                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" TextWrapping="Wrap"
+                     BorderThickness="0" Padding="0" Background="Transparent" MinHeight="0"
+                     FontSize="{DynamicResource FontSize14}" TextBlock.LineHeight="{DynamicResource BodyLineHeight}"/>
+            <wv2:WebView2 x:Name="HtmlBody" Visibility="Collapsed"/>
           </Grid>
         </Grid>
       </Grid>

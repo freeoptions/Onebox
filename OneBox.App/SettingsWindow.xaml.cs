@@ -1,6 +1,7 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using OneBox.Core;
 using OneBox.Storage;
 using Forms = System.Windows.Forms;
 using MessageBox = System.Windows.MessageBox;
@@ -28,6 +29,11 @@ public partial class SettingsWindow : Window
         _updatingControls = true;
         FontScaleBox.SelectedItem = Settings.FontScalePercent;
         RemoteImagesBox.IsChecked = Settings.AutoLoadRemoteImages;
+        AutoCopySelectedTextBox.IsChecked = Settings.AutoCopySelectedText;
+        ProxyModeBox.SelectedIndex = (int)Settings.Proxy.Mode;
+        ProxyAddressBox.Text = Settings.Proxy.Address;
+        CustomProxyPanel.Visibility = Settings.Proxy.Mode == ProxyMode.Custom ? Visibility.Visible : Visibility.Collapsed;
+        ProxyErrorText.Text = "";
         DownloadDirectoryLabel.Text = string.IsNullOrWhiteSpace(Settings.DownloadDirectory)
             ? "未设置，每次下载时选择" : Settings.DownloadDirectory;
         _updatingControls = false;
@@ -59,6 +65,31 @@ public partial class SettingsWindow : Window
 
     private void OnRemoteImagesChanged(object sender, RoutedEventArgs e) =>
         SaveSettings(Settings with { AutoLoadRemoteImages = RemoteImagesBox.IsChecked == true });
+
+    private void OnAutoCopySelectedTextChanged(object sender, RoutedEventArgs e) =>
+        SaveSettings(Settings with { AutoCopySelectedText = AutoCopySelectedTextBox.IsChecked == true });
+
+    private void OnProxyModeChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_updatingControls || CustomProxyPanel is null || ProxyErrorText is null) return;
+        var mode = (ProxyMode)ProxyModeBox.SelectedIndex;
+        CustomProxyPanel.Visibility = mode == ProxyMode.Custom ? Visibility.Visible : Visibility.Collapsed;
+        ProxyErrorText.Text = "";
+        if (mode == ProxyMode.Custom) return;
+        SaveSettings(Settings with { Proxy = Settings.Proxy with { Mode = mode } });
+    }
+
+    private void OnApplyProxy(object sender, RoutedEventArgs e)
+    {
+        var proxy = new ProxySettings { Mode = ProxyMode.Custom, Address = ProxyAddressBox.Text.Trim() };
+        try { proxy.ParseAddress(); }
+        catch (ArgumentException error)
+        {
+            ProxyErrorText.Text = error.Message;
+            return;
+        }
+        SaveSettings(Settings with { Proxy = proxy });
+    }
 
     private void OnChooseDownloadDirectory(object sender, RoutedEventArgs e)
     {

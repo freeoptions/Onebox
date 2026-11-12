@@ -21,7 +21,12 @@ public sealed record SyncFailure(string Summary, string Advice, string Details, 
         var summary = authentication ? "邮箱拒绝了登录授权" : timeout ? "同步请求超时" :
             certificate ? "安全连接验证失败" : network ? "连接邮箱服务器失败" : "邮箱同步未完成";
         var advice = authentication
-            ? provider == ProviderKind.Gmail ? "请重新授权Google账号后再同步。" : "请确认已开启IMAP/SMTP，并更新客户端授权码；这里需要的不是邮箱登录密码。"
+            ? provider switch
+            {
+                ProviderKind.Gmail => "请重新授权Google账号后再同步。",
+                ProviderKind.GmailImap => "请确认Google账号已开启两步验证，并更新应用专用密码；这里需要的不是Google登录密码。",
+                _ => "请确认已开启IMAP/SMTP，并更新客户端授权码；这里需要的不是邮箱登录密码。"
+            }
             : certificate ? "请检查系统时间及网络的证书设置后重试。"
             : timeout || network ? "请检查网络或代理后重试；若网络正常，可稍后再次同步。"
             : "请查看下方服务器返回的原因，再重试同步。";

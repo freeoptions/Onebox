@@ -15,8 +15,11 @@ public sealed class ReaderSettingsTests
         try
         {
             Assert.AreEqual(100, ReaderSettings.Load(path).FontScalePercent);
+            Assert.IsTrue(ReaderSettings.Load(path).AutoCopySelectedText);
             File.WriteAllText(path, "{\"AutoLoadRemoteImages\":false,\"DownloadDirectory\":\"\"}");
             var settings = ReaderSettings.Load(path);
+            Assert.IsTrue(settings.AutoCopySelectedText, "旧设置默认开启选中自动复制");
+            settings = settings with { AutoCopySelectedText = false };
             Assert.AreEqual(100, settings.FontScalePercent);
             foreach (var percent in new[] { 85, 100, 115, 130, 150 })
             {
@@ -24,6 +27,7 @@ public sealed class ReaderSettingsTests
                 settings.Save(path);
                 Assert.AreEqual(percent, ReaderSettings.Load(path).FontScalePercent);
                 Assert.IsFalse(ReaderSettings.Load(path).AutoLoadRemoteImages);
+                Assert.IsFalse(ReaderSettings.Load(path).AutoCopySelectedText);
             }
             settings = settings with { AutoLoadRemoteImages = true, DownloadDirectory = directory };
             settings.Save(path);

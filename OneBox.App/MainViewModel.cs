@@ -1,12 +1,16 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
 using OneBox.Core;
 using OneBox.Providers;
 
 namespace OneBox.App;
 
-public sealed record NoticeEntry(string Text, string Kind);
+public sealed record NoticeEntry(string Text, string Kind, DateTimeOffset RecordedAt)
+{
+    public string TimeText => RecordedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss");
+}
 
 public sealed class MessageRow(MailMessage message, string accountLabel) : INotifyPropertyChanged
 {
@@ -33,8 +37,8 @@ public sealed class MessageRow(MailMessage message, string accountLabel) : INoti
         }
     }
     public string Subject => Message.Subject;
-    public string Preview => Message.Preview;
-    public DateTimeOffset ReceivedAt => Message.ReceivedAt;
+    public string Preview => Regex.Replace(Message.Preview, @"\s+", " ").Trim();
+    public DateTime ReceivedAt => Message.ReceivedAt.LocalDateTime;
     public bool IsUnread => !Message.IsRead;
     public string ReadStatusText => IsUnread ? "未读" : "已读";
     public bool HasAttachments => Message.HasAttachments;
@@ -51,7 +55,7 @@ public sealed class MessageRow(MailMessage message, string accountLabel) : INoti
 public sealed class MainViewModel : INotifyPropertyChanged
 {
     private string _searchText = "";
-    private string _statusText = "离线";
+    private string _statusText = "正在加载本地邮件…";
     private string _currentFolderTitle = "所有收件箱";
     private string _mailCountText = "0 封邮件 · 搜索本地已同步内容";
     private string _selectedSubject = "选择一封邮件";
@@ -72,27 +76,20 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string? _selectedMessageKey;
     private string _selectedDateText = "";
     private readonly List<NoticeEntry> _noticeList = [];
-    private int _noticeIndex;
     private bool _isDownloadingAttachments;
-    public string NoticeText => _noticeList.Count == 0 ? StatusText : _noticeList[_noticeIndex].Text;
-    public string NoticeKind => _noticeList.Count == 0 ? "进度" : _noticeList[_noticeIndex].Kind;
+    public string NoticeText => _noticeList.Count == 0 ? StatusText : _noticeList[^1].Text;
+    public string NoticeKind => _noticeList.Count == 0 ? "状态" : _noticeList[^1].Kind;
+    public string NoticeTimeText => _noticeList.Count == 0 ? "" : _noticeList[^1].TimeText;
     public IReadOnlyList<NoticeEntry> RecentNoticeList => _noticeList.AsEnumerable().Reverse().ToArray();
     public void Notify(string text, string kind)
     {
         _noticeList.RemoveAll(item => item.Kind == "进度");
-        _noticeList.Add(new NoticeEntry(text, kind));
+        _noticeList.Add(new NoticeEntry(text, kind, DateTimeOffset.Now));
         if (_noticeList.Count > 20) _noticeList.RemoveAt(0);
-        _noticeIndex = _noticeList.Count - 1;
         OnPropertyChanged(nameof(NoticeText));
         OnPropertyChanged(nameof(NoticeKind));
+        OnPropertyChanged(nameof(NoticeTimeText));
         OnPropertyChanged(nameof(RecentNoticeList));
-    }
-    public void CycleNotice()
-    {
-        if (_noticeList.Count < 2) return;
-        _noticeIndex = (_noticeIndex + 1) % _noticeList.Count;
-        OnPropertyChanged(nameof(NoticeText));
-        OnPropertyChanged(nameof(NoticeKind));
     }
     public bool IsDownloadingAttachments
     {

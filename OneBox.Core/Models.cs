@@ -1,6 +1,6 @@
 namespace OneBox.Core;
 
-public enum ProviderKind { Gmail, Qq, NetEase }
+public enum ProviderKind { Gmail, Qq, NetEase, GmailImap }
 public enum ConnectionStatus { Offline, Connecting, Online, NeedsAuthorization, Failed }
 public enum FolderKind { Inbox, Sent, Drafts, Archive, Trash, Other }
 public enum PendingActionKind { MarkRead, MarkUnread, Star, Unstar }

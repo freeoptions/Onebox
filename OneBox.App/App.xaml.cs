@@ -2,6 +2,12 @@ namespace OneBox.App;
 
 public partial class App : System.Windows.Application
 {
+    protected override void OnStartup(System.Windows.StartupEventArgs e)
+    {
+        SelectionAutoCopy.Register();
+        base.OnStartup(e);
+    }
+
     public static IReadOnlyList<int> FontScalePercentList { get; } = [85, 100, 115, 130, 150];
 
     public static void ApplyFontScale(int percent)

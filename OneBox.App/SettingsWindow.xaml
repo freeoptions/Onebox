@@ -32,9 +32,31 @@
             </Border>
           </StackPanel>
         </Border>
+        <Border Background="{StaticResource SurfaceBrush}" CornerRadius="{StaticResource PanelRadius}" Padding="20" Margin="0,0,0,16">
+          <StackPanel>
+            <TextBlock Text="网络代理" FontSize="{DynamicResource FontSize14}" FontWeight="SemiBold" Margin="0,0,0,16"/>
+            <TextBlock Text="用于邮箱收发、同步和连接验证" Foreground="{StaticResource MutedBrush}" FontSize="{DynamicResource FontSize12}" Margin="0,0,0,12" TextWrapping="Wrap"/>
+            <ComboBox x:Name="ProxyModeBox" SelectionChanged="OnProxyModeChanged" AutomationProperties.Name="代理方式">
+              <ComboBoxItem Content="使用系统代理（默认）"/>
+              <ComboBoxItem Content="不使用代理"/>
+              <ComboBoxItem Content="自定义代理"/>
+            </ComboBox>
+            <StackPanel x:Name="CustomProxyPanel" Visibility="Collapsed" Margin="0,14,0,0">
+              <TextBlock Text="代理地址" Margin="0,0,0,8"/>
+              <TextBox x:Name="ProxyAddressBox" MinHeight="38" Padding="9,6" AutomationProperties.Name="代理地址"/>
+              <TextBlock Text="例如http://127.0.0.1:7890或socks5://127.0.0.1:7890，不填写账号密码。" Foreground="{StaticResource MutedBrush}" FontSize="{DynamicResource FontSize12}" TextWrapping="Wrap" Margin="0,8,0,10"/>
+              <Button x:Name="ApplyProxyButton" Content="应用代理" Click="OnApplyProxy" HorizontalAlignment="Left" Style="{StaticResource OutlineButton}"/>
+            </StackPanel>
+            <TextBlock x:Name="ProxyErrorText" TextWrapping="Wrap" Margin="0,8,0,0"/>
+            <TextBlock Text="保存后对后续连接生效，自定义代理填写后点击“应用代理”。" Foreground="{StaticResource MutedBrush}" FontSize="{DynamicResource FontSize12}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+          </StackPanel>
+        </Border>
         <Border Background="{StaticResource SurfaceBrush}" CornerRadius="{StaticResource PanelRadius}" Padding="20">
           <StackPanel>
             <TextBlock Text="邮件阅读与下载" FontSize="{DynamicResource FontSize14}" FontWeight="SemiBold" Margin="0,0,0,16"/>
+            <CheckBox x:Name="AutoCopySelectedTextBox" Content="选中文本后自动复制" Click="OnAutoCopySelectedTextChanged"/>
+            <TextBlock Text="选中邮件正文或文本框中的文字后自动复制到剪贴板。" FontSize="{DynamicResource FontSize12}"
+                       Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,8,0,18"/>
             <CheckBox x:Name="RemoteImagesBox" Content="自动加载远程图片" Click="OnRemoteImagesChanged"/>
             <TextBlock Text="对所有账号生效，关闭后可为单封邮件显示图片。" FontSize="{DynamicResource FontSize12}"
                        Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,8,0,18"/>
@@ -53,7 +75,7 @@
     <Border Grid.Row="2" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="28,14">
       <Grid>
         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-        <TextBlock Text="修改后立即生效并保存" FontSize="{DynamicResource FontSize12}" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,16,0"/>
+        <TextBlock Text="设置保存在本机" FontSize="{DynamicResource FontSize12}" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,16,0"/>
         <Button Grid.Column="1" Content="关闭" Click="OnClose" IsCancel="True" Style="{StaticResource AccentButton}" Padding="22,8"/>
       </Grid>
     </Border>

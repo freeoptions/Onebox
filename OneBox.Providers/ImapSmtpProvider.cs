@@ -8,10 +8,11 @@ using OneBox.Core;
 
 namespace OneBox.Providers;
 
-public sealed class ImapSmtpProvider(ProviderKind kind) : IMailProvider
+public sealed class ImapSmtpProvider(ProviderKind kind, MailProxy? proxy = null) : IMailProvider
 {
     static ImapSmtpProvider() => MailEncoding.Initialize();
-    public ProviderKind Kind { get; } = kind is ProviderKind.Qq or ProviderKind.NetEase
+    private readonly MailProxy _proxy = proxy ?? new MailProxy();
+    public ProviderKind Kind { get; } = kind is ProviderKind.Qq or ProviderKind.NetEase or ProviderKind.GmailImap
         ? kind : throw new ArgumentOutOfRangeException(nameof(kind));
     public long? CurrentUidValidity { get; private set; }
 
@@ -20,6 +21,7 @@ public sealed class ImapSmtpProvider(ProviderKind kind) : IMailProvider
         var domain = address.Split('@').LastOrDefault()?.ToLowerInvariant();
         return domain switch
         {
+            "gmail.com" or "googlemail.com" => ("imap.gmail.com", 993, "smtp.gmail.com", 465),
             "qq.com" => ("imap.qq.com", 993, "smtp.qq.com", 465),
             "163.com" => ("imap.163.com", 993, "smtp.163.com", 465),
             "126.com" => ("imap.126.com", 993, "smtp.126.com", 465),
@@ -34,6 +36,7 @@ public sealed class ImapSmtpProvider(ProviderKind kind) : IMailProvider
         var client = new ImapClient();
         try
         {
+            client.ProxyClient = _proxy.CreateClient(endpoint.Imap, endpoint.ImapPort);
             await client.ConnectAsync(endpoint.Imap, endpoint.ImapPort, SecureSocketOptions.SslOnConnect, ct);
             await client.AuthenticateAsync(account.Address, secret, ct);
             if (Kind == ProviderKind.NetEase && client.Capabilities.HasFlag(ImapCapabilities.Id))
@@ -61,6 +64,7 @@ public sealed class ImapSmtpProvider(ProviderKind kind) : IMailProvider
         var client = new SmtpClient();
         try
         {
+            client.ProxyClient = _proxy.CreateClient(endpoint.Smtp, endpoint.SmtpPort);
             await client.ConnectAsync(endpoint.Smtp, endpoint.SmtpPort, SecureSocketOptions.SslOnConnect, ct);
             await client.AuthenticateAsync(account.Address, secret, ct);
             return client;
@@ -74,23 +78,28 @@ public sealed class ImapSmtpProvider(ProviderKind kind) : IMailProvider
 
     public async Task<ConnectionCheck> TestConnectionAsync(Account account, string secret, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         string? receivingError = null;
         string? sendingError = null;
+        using var receivingTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        receivingTimeout.CancelAfter(TimeSpan.FromSeconds(15));
         try
         {
-            using var imap = await OpenImapAsync(account, secret, ct);
-            await imap.DisconnectAsync(true, ct);
+            using var imap = await OpenImapAsync(account, secret, receivingTimeout.Token);
+            await imap.DisconnectAsync(true, receivingTimeout.Token);
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (Exception error) when (!ct.IsCancellationRequested)
         {
             receivingError = Describe(error);
         }
+        using var sendingTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        sendingTimeout.CancelAfter(TimeSpan.FromSeconds(15));
         try
         {
-            using var smtp = await OpenSmtpAsync(account, secret, ct);
-            await smtp.DisconnectAsync(true, ct);
+            using var smtp = await OpenSmtpAsync(account, secret, sendingTimeout.Token);
+            await smtp.DisconnectAsync(true, sendingTimeout.Token);
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (Exception error) when (!ct.IsCancellationRequested)
         {
             sendingError = Describe(error);
         }
@@ -218,9 +227,15 @@ public sealed class ImapSmtpProvider(ProviderKind kind) : IMailProvider
         await client.DisconnectAsync(true, ct);
     }
 
-    private static string Describe(Exception error) => error switch
+    private string Describe(Exception error) => error switch
     {
-        MailKit.Security.AuthenticationException => "授权码错误或客户端协议尚未开启",
+        OperationCanceledException or TimeoutException => "连接超时，请检查设置中的代理及网络后重试",
+        NotSupportedException or ArgumentException => "代理配置无效，请检查设置中的代理协议、地址和端口",
+        MailKit.Net.Proxy.ProxyProtocolException => "代理连接失败，请检查代理是否运行、地址及端口是否正确",
+        SslHandshakeException => "安全连接验证失败，请检查系统时间、证书及网络是否允许访问证书验证服务",
+        MailKit.Security.AuthenticationException => Kind == ProviderKind.GmailImap
+            ? "应用专用密码无效，请确认已开启两步验证并生成应用专用密码；不能使用Google登录密码"
+            : "授权码错误或客户端协议尚未开启",
         System.Security.Authentication.AuthenticationException => "证书验证失败",
         System.Net.Sockets.SocketException => "网络连接失败，请检查网络或代理",
         _ => "连接失败，请检查邮箱设置与网络"

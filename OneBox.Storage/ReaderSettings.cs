@@ -1,12 +1,15 @@
 using System.Text.Json;
+using OneBox.Core;
 
 namespace OneBox.Storage;
 
 public sealed record ReaderSettings
 {
     public bool AutoLoadRemoteImages { get; init; } = true;
+    public bool AutoCopySelectedText { get; init; } = true;
     public string DownloadDirectory { get; init; } = "";
     public int FontScalePercent { get; init; } = 100;
+    public ProxySettings Proxy { get; init; } = new();
 
     public static ReaderSettings Load(string path) => File.Exists(path)
         ? JsonSerializer.Deserialize<ReaderSettings>(File.ReadAllText(path)) ?? throw new JsonException("阅读设置内容为空")

@@ -15,6 +15,10 @@ public partial class AccountDialog : Window
 {
     private readonly string? _configuredGoogleClientId;
     private readonly bool _hasGoogleClientSecret;
+    private bool _legacyGoogleOAuth;
+    private CancellationTokenSource? _validationCancellation;
+
+    public Func<Account, string, CancellationToken, Task<ConnectionCheck>>? ValidateConnectionAsync { get; init; }
 
     public Account? ResultAccount { get; private set; }
     public string Secret { get; private set; } = "";
@@ -24,7 +28,7 @@ public partial class AccountDialog : Window
     {
         0 => ProviderKind.Qq,
         1 => ProviderKind.NetEase,
-        _ => ProviderKind.Gmail
+        _ => _legacyGoogleOAuth ? ProviderKind.Gmail : ProviderKind.GmailImap
     };
 
     public AccountDialog(string? googleClientId = null, bool hasGoogleClientSecret = false)
@@ -53,28 +57,37 @@ public partial class AccountDialog : Window
 
     public void SelectGmailOnly()
     {
+        _legacyGoogleOAuth = true;
         ProviderBox.SelectedIndex = 2;
         ProviderBox.IsEnabled = false;
+        UpdateProviderUi();
     }
 
     private void OnProviderChanged(object sender, SelectionChangedEventArgs e) => UpdateProviderUi();
 
     private void UpdateProviderUi()
     {
-        if (GmailPanel is null || StandardFieldsPanel is null || HelpText is null || AcceptButton is null) return;
+        if (GmailPanel is null || StandardFieldsPanel is null || HelpText is null || AcceptButton is null || SecretLabel is null || AppPasswordButton is null) return;
         var gmail = SelectedProvider == ProviderKind.Gmail;
         GmailPanel.Visibility = gmail ? Visibility.Visible : Visibility.Collapsed;
         StandardFieldsPanel.Visibility = gmail ? Visibility.Collapsed : Visibility.Visible;
         GoogleSetupPanel.Visibility = gmail && (string.IsNullOrWhiteSpace(_configuredGoogleClientId) || !_hasGoogleClientSecret)
             ? Visibility.Visible : Visibility.Collapsed;
         AcceptButton.Content = gmail ? "在浏览器中登录" : "验证并添加";
-        HelpText.Text = SelectedProvider == ProviderKind.Qq
-            ? "请先在 QQ 邮箱网页端开启 IMAP/SMTP。这里填写客户端授权码，不是邮箱登录密码。"
-            : "请先在网易邮箱网页端开启 IMAP/SMTP。这里填写客户端授权码，不是邮箱登录密码。";
+        var gmailImap = SelectedProvider == ProviderKind.GmailImap;
+        SecretLabel.Text = gmailImap ? "应用专用密码" : "客户端授权码";
+        AppPasswordButton.Visibility = gmailImap ? Visibility.Visible : Visibility.Collapsed;
+        HelpText.Text = SelectedProvider switch
+        {
+            ProviderKind.Qq => "请先在QQ邮箱网页端开启IMAP/SMTP。这里填写客户端授权码，不是邮箱登录密码。",
+            ProviderKind.GmailImap => "请先开启Google账号的两步验证，再生成16位应用专用密码填写到这里，不是Google登录密码。部分组织账号或启用高级保护的账号可能无法生成应用专用密码。",
+            _ => "请先在网易邮箱网页端开启IMAP/SMTP。这里填写客户端授权码，不是邮箱登录密码。"
+        };
     }
 
-    private void OnAccept(object sender, RoutedEventArgs e)
+    private async void OnAccept(object sender, RoutedEventArgs e)
     {
+        if (_validationCancellation is not null) return;
         var kind = SelectedProvider;
         if (kind == ProviderKind.Gmail)
         {
@@ -107,7 +120,14 @@ public partial class AccountDialog : Window
         try
         {
             ImapSmtpProvider.Servers(address);
-            if ((kind == ProviderKind.Qq) != address.EndsWith("@qq.com", StringComparison.OrdinalIgnoreCase))
+            var domain = address.Split('@').Last().ToLowerInvariant();
+            if (!(kind switch
+                {
+                    ProviderKind.Qq => domain == "qq.com",
+                    ProviderKind.NetEase => domain is "163.com" or "126.com" or "yeah.net",
+                    ProviderKind.GmailImap => domain is "gmail.com" or "googlemail.com",
+                    _ => false
+                }))
                 throw new ArgumentException();
         }
         catch
@@ -115,16 +135,64 @@ public partial class AccountDialog : Window
             MessageBox.Show(this, "邮箱类型与地址域名不匹配", "OneBox");
             return;
         }
-        if (SecretBox.Password.Length == 0)
+        var secret = kind == ProviderKind.GmailImap
+            ? string.Concat(SecretBox.Password.Where(character => !char.IsWhiteSpace(character)))
+            : SecretBox.Password;
+        if (secret.Length == 0)
         {
-            MessageBox.Show(this, "请输入客户端授权码", "OneBox");
+            MessageBox.Show(this, kind == ProviderKind.GmailImap ? "请输入应用专用密码" : "请输入客户端授权码", "OneBox");
             return;
         }
-        ResultAccount = new Account(Guid.NewGuid(), address,
+        if (kind == ProviderKind.GmailImap && secret.Length != 16)
+        {
+            MessageBox.Show(this, "请输入Google生成的16位应用专用密码", "OneBox");
+            return;
+        }
+        var account = new Account(Guid.NewGuid(), address,
             string.IsNullOrWhiteSpace(NameBox.Text) ? address : NameBox.Text.Trim(), kind);
-        Secret = SecretBox.Password;
+        if (ValidateConnectionAsync is not null)
+        {
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(40));
+            _validationCancellation = cancellation;
+            AcceptButton.IsEnabled = ProviderBox.IsEnabled = StandardFieldsPanel.IsEnabled = false;
+            AcceptButton.Content = "正在验证…";
+            ValidationProgress.Visibility = Visibility.Visible;
+            ValidationText.Text = "正在验证收信和发信连接，每项最多等待15秒。可点击取消。";
+            try
+            {
+                var check = await ValidateConnectionAsync(account, secret, cancellation.Token);
+                cancellation.Token.ThrowIfCancellationRequested();
+                if (!check.ReceivingSucceeded || !check.SendingSucceeded)
+                {
+                    ValidationText.Text = $"收信：{check.ReceivingError ?? "正常"}\n发信：{check.SendingError ?? "正常"}";
+                    return;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                ValidationText.Text = "连接验证已取消或超时，请检查设置中的代理及网络后重试。";
+                return;
+            }
+            catch (Exception error)
+            {
+                ValidationText.Text = SyncFailure.Describe(error, kind, "验证收信和发信", secret).DisplayText;
+                return;
+            }
+            finally
+            {
+                _validationCancellation = null;
+                AcceptButton.IsEnabled = StandardFieldsPanel.IsEnabled = true;
+                ProviderBox.IsEnabled = !AddressBox.IsReadOnly;
+                AcceptButton.Content = "验证并添加";
+                ValidationProgress.Visibility = Visibility.Collapsed;
+            }
+        }
+        ResultAccount = account;
+        Secret = secret;
         DialogResult = true;
     }
+
+    private void OnOpenAppPasswords(object sender, RoutedEventArgs e) => OpenBrowser("https://myaccount.google.com/apppasswords");
 
     private void OnOpenGmailApi(object sender, RoutedEventArgs e) => OpenBrowser("https://console.cloud.google.com/apis/library/gmail.googleapis.com");
 
@@ -165,5 +233,15 @@ public partial class AccountDialog : Window
         catch { MessageBox.Show(this, "无法打开浏览器，请检查系统默认浏览器设置", "OneBox"); }
     }
 
-    private void OnCancel(object sender, RoutedEventArgs e) => DialogResult = false;
+    protected override void OnClosed(EventArgs e)
+    {
+        _validationCancellation?.Cancel();
+        base.OnClosed(e);
+    }
+
+    private void OnCancel(object sender, RoutedEventArgs e)
+    {
+        _validationCancellation?.Cancel();
+        DialogResult = false;
+    }
 }
