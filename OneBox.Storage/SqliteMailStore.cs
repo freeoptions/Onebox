@@ -243,6 +243,38 @@ public sealed class SqliteMailStore(string databasePath) : IMailStore
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task RemoveMissingMessagesAsync(Guid accountId, string folderId, IReadOnlySet<string> serverIdSet,
+        DateTimeOffset since, CancellationToken cancellationToken = default)
+    {
+        await using var connection = Open();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var query = connection.CreateCommand();
+        query.Transaction = (SqliteTransaction)transaction;
+        query.CommandText = "SELECT server_id,received_at FROM messages WHERE account_id=$account AND folder_id=$folder";
+        query.Parameters.AddWithValue("$account", accountId.ToString("N"));
+        query.Parameters.AddWithValue("$folder", folderId);
+        var missingIdList = new List<string>();
+        await using (var reader = await query.ExecuteReaderAsync(cancellationToken))
+            while (await reader.ReadAsync(cancellationToken))
+                if (DateTimeOffset.Parse(reader.GetString(1)) >= since && !serverIdSet.Contains(reader.GetString(0)))
+                    missingIdList.Add(reader.GetString(0));
+        foreach (var id in missingIdList)
+        {
+            var delete = connection.CreateCommand();
+            delete.Transaction = (SqliteTransaction)transaction;
+            delete.CommandText = """
+                DELETE FROM pending_actions WHERE account_id=$account AND message_server_id=$id;
+                DELETE FROM messages WHERE account_id=$account AND server_id=$id AND folder_id=$folder;
+                """;
+            delete.Parameters.AddWithValue("$account", accountId.ToString("N"));
+            delete.Parameters.AddWithValue("$id", id);
+            delete.Parameters.AddWithValue("$folder", folderId);
+            await delete.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await transaction.CommitAsync(cancellationToken);
+    }
+
     public async Task<SyncCursor?> GetCursorAsync(Guid accountId, string folderId, CancellationToken cancellationToken = default)
     {
         await using var connection = Open();

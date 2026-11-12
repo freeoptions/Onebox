@@ -4,7 +4,7 @@ namespace OneBox.Storage;
 
 public sealed record SyncSchedule(DateTimeOffset LastAttempt, int Failures = 0, DateTimeOffset? RetryAt = null)
 {
-    public bool IsDue(DateTimeOffset now) => now >= (RetryAt ?? LastAttempt.AddHours(2));
+    public bool IsDue(DateTimeOffset now) => now >= (RetryAt ?? LastAttempt.AddHours(5));
 
     public SyncSchedule Start(DateTimeOffset now) => new(now, RetryAt is not null ? Failures : 0);
 

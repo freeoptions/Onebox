@@ -41,6 +41,9 @@ public partial class MainWindow : Window
     private bool _exiting;
     private bool _syncing;
     private bool _loadingAccounts;
+    private bool _listenersStarted;
+    private readonly Dictionary<(Guid AccountId, bool Junk), (CancellationTokenSource Cancellation, Task Task)> _inboxListenerMap = [];
+    private readonly HashSet<Guid> _inboxChangeAccountSet = [];
     private bool _allowRemoteImages;
     private CancellationTokenSource? _bodyLoadCancellation;
     private Guid? _selectedAccount;
@@ -92,6 +95,7 @@ public partial class MainWindow : Window
         {
             UpdateSyncProblem();
             await SyncAllAsync();
+            await ProcessInboxChangesAsync();
         };
         _selectionCopyTimer.Tick += async (_, _) => await CopyHtmlSelectionAsync();
         _searchTimer.Tick += async (_, _) => { _searchTimer.Stop(); await LoadMessagesAsync(); };
@@ -172,7 +176,7 @@ public partial class MainWindow : Window
             var nextSyncAt = _viewModel.Accounts
                 .Where(account => account.Status != ConnectionStatus.NeedsAuthorization)
                 .Select(account => _syncScheduleSettings.AccountMap.TryGetValue(account.Id, out var schedule)
-                    ? schedule.RetryAt ?? schedule.LastAttempt.AddHours(2) : now)
+                    ? schedule.RetryAt ?? schedule.LastAttempt.AddHours(5) : now)
                 .Select(time => (DateTimeOffset?)time).Min();
             _viewModel.StatusText = _viewModel.Accounts.Count == 0 ? "尚未添加账号" :
                 nextSyncAt is null ? "已加载本地邮件，账号需要更新授权" :
@@ -183,6 +187,8 @@ public partial class MainWindow : Window
                 nextSyncAt <= now ? "进度" : "状态");
             UpdateSyncProblem();
             _pollTimer.Start();
+            _listenersStarted = true;
+            ReconcileInboxListeners();
             await SyncAllAsync();
         }
         catch (Exception error)
@@ -206,6 +212,61 @@ public partial class MainWindow : Window
         finally { _loadingAccounts = false; }
         UpdateNavigationSelection();
         UpdateSyncProblem();
+        if (_listenersStarted) ReconcileInboxListeners();
+    }
+
+    private void StopInboxListener((Guid AccountId, bool Junk) key)
+    {
+        if (!_inboxListenerMap.Remove(key, out var listener)) return;
+        listener.Cancellation.Cancel();
+        _ = listener.Task.ContinueWith(_ => listener.Cancellation.Dispose(), TaskScheduler.Default);
+    }
+
+    private void ReconcileInboxListeners()
+    {
+        var accountList = _viewModel.Accounts.Where(account =>
+            account.Provider is ProviderKind.Qq or ProviderKind.GmailImap && account.Status != ConnectionStatus.NeedsAuthorization).ToArray();
+        var accountIdSet = accountList.Select(account => account.Id).ToHashSet();
+        foreach (var key in _inboxListenerMap.Keys.Where(key => !accountIdSet.Contains(key.AccountId)).ToArray())
+            StopInboxListener(key);
+        foreach (var account in accountList)
+        {
+            if (_providerMap[account.Provider] is not ImapSmtpProvider provider) continue;
+            foreach (var junk in new[] { false, true })
+            {
+                var key = (account.Id, junk);
+                if (_inboxListenerMap.ContainsKey(key)) continue;
+                var cancellation = new CancellationTokenSource();
+                var token = cancellation.Token;
+                var listener = new ImapIdleListener(account, provider, _vault, _store, junk);
+                var task = Task.Run(() => listener.RunAsync(
+                    () => Dispatcher.BeginInvoke(new Action(async () =>
+                    {
+                        if (_exiting || token.IsCancellationRequested) return;
+                        _inboxChangeAccountSet.Add(account.Id);
+                        await ProcessInboxChangesAsync();
+                    })),
+                    (text, kind) => Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        if (!_exiting && !token.IsCancellationRequested) Notify(text, kind);
+                    })), token));
+                _inboxListenerMap.Add(key, (cancellation, task));
+            }
+        }
+    }
+
+    private async Task ProcessInboxChangesAsync()
+    {
+        if (_syncing || _exiting) return;
+        foreach (var id in _inboxChangeAccountSet.ToArray())
+        {
+            if (_syncing || _exiting) return;
+            var account = _viewModel.Accounts.FirstOrDefault(account => account.Id == id);
+            if (account is null) { _inboxChangeAccountSet.Remove(id); continue; }
+            if (account.Status is ConnectionStatus.Failed or ConnectionStatus.NeedsAuthorization) continue;
+            _inboxChangeAccountSet.Remove(id);
+            await SyncAllAsync(force: true, accountId: id);
+        }
     }
 
     private async Task LoadMessagesAsync()
@@ -269,9 +330,15 @@ public partial class MainWindow : Window
                     if (validity is not null && cursor?.UidValidity is not null && validity != cursor.UidValidity)
                         await _store.ResetFolderAsync(account.Id, "INBOX");
                     await _store.UpsertMessagesAsync(messageList);
+                    if (provider is ImapSmtpProvider imap)
+                    {
+                        await _store.RemoveMissingMessagesAsync(account.Id, "INBOX", imap.CurrentMessageIdSet, DateTimeOffset.UtcNow.AddDays(-90));
+                        if (imap.CurrentJunkCursor is SyncCursor junkCursor) await _store.SaveCursorAsync(junkCursor);
+                    }
                     await _store.SaveCursorAsync(new SyncCursor(account.Id, "INBOX",
                         (provider as GmailProvider)?.LatestHistoryId, validity,
-                        messageList.Select(message => long.TryParse(message.ServerId, out var uid) ? uid : 0).DefaultIfEmpty(0).Max(), DateTimeOffset.UtcNow));
+                        (provider as ImapSmtpProvider)?.CurrentHighestUid ??
+                            messageList.Select(message => long.TryParse(message.ServerId, out var uid) ? uid : 0).DefaultIfEmpty(0).Max(), DateTimeOffset.UtcNow));
                     await _store.UpsertAccountAsync(account with { Status = ConnectionStatus.Online, LastError = null });
                     _syncScheduleSettings.AccountMap[account.Id] = new SyncSchedule(DateTimeOffset.UtcNow);
                     _syncScheduleSettings.Save(_syncSchedulePath);
@@ -581,7 +648,8 @@ public partial class MainWindow : Window
                     PendingActionKind.Unstar => false,
                     _ => (bool?)null
                 };
-                await provider.SetFlagsAsync(account, secret, action.MessageServerId, read, starred, CancellationToken.None);
+                try { await provider.SetFlagsAsync(account, secret, action.MessageServerId, read, starred, CancellationToken.None); }
+                catch (MailKit.MessageNotFoundException) { }
                 await _store.CompletePendingAsync(action.Id);
             }
         }
@@ -812,12 +880,16 @@ public partial class MainWindow : Window
 
     private void ApplyReaderSettings(ReaderSettings settings)
     {
+        var proxyChanged = _readerSettings.Proxy != settings.Proxy;
+        if (proxyChanged)
+            foreach (var key in _inboxListenerMap.Keys.ToArray()) StopInboxListener(key);
         _readerSettings = settings;
         SelectionAutoCopy.Enabled = settings.AutoCopySelectedText;
         _lastSelectedText = "";
         if (settings.AutoCopySelectedText) _selectionCopyTimer.Start();
         else _selectionCopyTimer.Stop();
         _mailProxy.Settings = settings.Proxy;
+        if (proxyChanged && _listenersStarted) ReconcileInboxListeners();
         _viewModel.AutoLoadRemoteImages = settings.AutoLoadRemoteImages;
         _viewModel.DownloadDirectory = settings.DownloadDirectory;
         App.ApplyFontScale(settings.FontScalePercent);
@@ -881,6 +953,8 @@ public partial class MainWindow : Window
         _pollTimer.Stop();
         try
         {
+            foreach (var key in _inboxListenerMap.Keys.Where(key => key.AccountId == account.Id).ToArray()) StopInboxListener(key);
+            _inboxChangeAccountSet.Remove(account.Id);
             _vault.Delete(account.Id);
             await _store.RemoveAccountAsync(account.Id);
             try { await Task.Run(() => InlineImages.DeleteAccount(account.Id, InlineImages.CacheDirectory)); }
@@ -964,6 +1038,7 @@ public partial class MainWindow : Window
             if (dialog.ShowDialog() != true) return;
             secret = dialog.Secret;
         }
+        foreach (var key in _inboxListenerMap.Keys.Where(key => key.AccountId == account.Id).ToArray()) StopInboxListener(key);
         _vault.Save(account.Id, secret);
         await _store.UpsertAccountAsync(account with { Status = ConnectionStatus.Online, LastError = null });
         await LoadAccountsAsync();
@@ -996,6 +1071,7 @@ public partial class MainWindow : Window
     private void OnClosing(object? sender, CancelEventArgs e)
     {
         if (!_exiting) { e.Cancel = true; Hide(); return; }
+        foreach (var key in _inboxListenerMap.Keys.ToArray()) StopInboxListener(key);
         _pollTimer.Stop();
         _searchTimer.Stop();
         _bodyLoadCancellation?.Cancel();

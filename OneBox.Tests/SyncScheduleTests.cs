@@ -7,16 +7,16 @@ namespace OneBox.Tests;
 public sealed class SyncScheduleTests
 {
     [TestMethod]
-    public void SuccessfulSyncBecomesDueAtTwoHours()
+    public void SuccessfulSyncBecomesDueAtFiveHours()
     {
         var now = DateTimeOffset.UtcNow;
         var schedule = new SyncSchedule(now);
-        Assert.IsFalse(schedule.IsDue(now.AddHours(2).AddTicks(-1)));
-        Assert.IsTrue(schedule.IsDue(now.AddHours(2)));
+        Assert.IsFalse(schedule.IsDue(now.AddHours(5).AddTicks(-1)));
+        Assert.IsTrue(schedule.IsDue(now.AddHours(5)));
     }
 
     [TestMethod]
-    public void FailureAllowsThreeFiveMinuteRetriesThenWaitsTwoHours()
+    public void FailureAllowsThreeFiveMinuteRetriesThenWaitsFiveHours()
     {
         var now = DateTimeOffset.UtcNow;
         var schedule = new SyncSchedule(now);
@@ -34,8 +34,8 @@ public sealed class SyncScheduleTests
         Assert.AreEqual(4, schedule.Failures);
         Assert.IsNull(schedule.RetryAt);
         Assert.IsFalse(schedule.IsDue(now.AddMinutes(5)));
-        Assert.IsTrue(schedule.IsDue(now.AddHours(2)));
-        Assert.AreEqual(0, schedule.Start(now.AddHours(2)).Failures);
+        Assert.IsTrue(schedule.IsDue(now.AddHours(5)));
+        Assert.AreEqual(0, schedule.Start(now.AddHours(5)).Failures);
     }
 
     [TestMethod]
@@ -48,7 +48,7 @@ public sealed class SyncScheduleTests
         Assert.IsNotNull(failedSchedule.RetryAt);
         Assert.AreEqual(0, successfulSchedule.Failures);
         Assert.IsNull(successfulSchedule.RetryAt);
-        Assert.IsFalse(successfulSchedule.IsDue(now.AddHours(2)));
+        Assert.IsFalse(successfulSchedule.IsDue(now.AddHours(5)));
     }
 
     [TestMethod]

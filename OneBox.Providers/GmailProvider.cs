@@ -101,7 +101,7 @@ public sealed class GmailProvider(string clientId, string clientSecret, ICredent
     public async Task<IReadOnlyList<MailMessage>> GetRecentInboxAsync(Account account, string secret,
         SyncCursor? cursor, DateTimeOffset since, CancellationToken ct)
     {
-        var ids = new HashSet<string>(StringComparer.Ordinal);
+        var idSet = new HashSet<string>(StringComparer.Ordinal);
         var incrementalValid = false;
         if (!string.IsNullOrWhiteSpace(cursor?.GmailHistoryId))
         {
@@ -118,7 +118,7 @@ public sealed class GmailProvider(string clientId, string clientSecret, ICredent
                         {
                             if (change.TryGetProperty("messages", out var messages))
                                 foreach (var item in messages.EnumerateArray())
-                                    if (item.TryGetProperty("id", out var id)) ids.Add(id.GetString()!);
+                                    if (item.TryGetProperty("id", out var id)) idSet.Add(id.GetString()!);
                         }
                     LatestHistoryId = history.RootElement.TryGetProperty("historyId", out var historyId)
                         ? historyId.GetString() : cursor.GmailHistoryId;
@@ -128,28 +128,42 @@ public sealed class GmailProvider(string clientId, string clientSecret, ICredent
             }
             catch (GmailCursorExpiredException)
             {
-                ids.Clear();
+                idSet.Clear();
             }
         }
-        if (incrementalValid && ids.Count == 0) return [];
         if (!incrementalValid)
         {
-            var query = Uri.EscapeDataString($"after:{since:yyyy/MM/dd}");
+            var query = Uri.EscapeDataString($"after:{since:yyyy/MM/dd} {{in:inbox in:spam}} -in:trash");
             string? page = null;
             do
             {
-                var url = $"{Api}/messages?labelIds=INBOX&maxResults=500&q={query}";
+                var url = $"{Api}/messages?includeSpamTrash=true&maxResults=500&q={query}";
                 if (page is not null) url += "&pageToken=" + Uri.EscapeDataString(page);
                 using var list = await GetAsync(url, secret, ct, account.Id);
                 if (list.RootElement.TryGetProperty("messages", out var messages))
-                    foreach (var item in messages.EnumerateArray()) ids.Add(item.GetProperty("id").GetString()!);
+                    foreach (var item in messages.EnumerateArray()) idSet.Add(item.GetProperty("id").GetString()!);
+                page = list.RootElement.TryGetProperty("nextPageToken", out var next) ? next.GetString() : null;
+            } while (page is not null);
+        }
+        if (incrementalValid)
+        {
+            // 已有历史游标的账号也需要补齐升级前尚未导入的垃圾邮件。
+            var query = Uri.EscapeDataString($"after:{since:yyyy/MM/dd} in:spam -in:trash");
+            string? page = null;
+            do
+            {
+                var url = $"{Api}/messages?includeSpamTrash=true&maxResults=500&q={query}";
+                if (page is not null) url += "&pageToken=" + Uri.EscapeDataString(page);
+                using var list = await GetAsync(url, secret, ct, account.Id);
+                if (list.RootElement.TryGetProperty("messages", out var messages))
+                    foreach (var item in messages.EnumerateArray()) idSet.Add(item.GetProperty("id").GetString()!);
                 page = list.RootElement.TryGetProperty("nextPageToken", out var next) ? next.GetString() : null;
             } while (page is not null);
         }
         using var profile = await GetAsync($"{Api}/profile", secret, ct, account.Id);
         LatestHistoryId = profile.RootElement.GetProperty("historyId").GetString();
-        var result = new List<MailMessage>();
-        foreach (var id in ids)
+        var messageList = new List<MailMessage>();
+        foreach (var id in idSet)
         {
             JsonDocument item;
             try { item = await GetAsync($"{Api}/messages/{Uri.EscapeDataString(id)}?format=metadata", secret, ct, account.Id); }
@@ -157,18 +171,18 @@ public sealed class GmailProvider(string clientId, string clientSecret, ICredent
             using (item)
             {
             var root = item.RootElement;
-            var labels = root.GetProperty("labelIds").EnumerateArray().Select(label => label.GetString()).ToHashSet();
-            if (!labels.Contains("INBOX")) continue;
+            var labelSet = root.GetProperty("labelIds").EnumerateArray().Select(label => label.GetString()).ToHashSet();
+            if (labelSet.Contains("TRASH") || (!labelSet.Contains("INBOX") && !labelSet.Contains("SPAM"))) continue;
             var headers = ReadHeaders(root.GetProperty("payload"));
             var from = headers.GetValueOrDefault("From", "");
-            result.Add(new MailMessage(account.Id, id, "INBOX", headers.GetValueOrDefault("Subject", "（无主题）"),
+            messageList.Add(new MailMessage(account.Id, id, "INBOX", headers.GetValueOrDefault("Subject", "（无主题）"),
                 from, from, headers.GetValueOrDefault("To", ""),
                 DateTimeOffset.FromUnixTimeMilliseconds(long.Parse(root.GetProperty("internalDate").GetString()!)),
                 root.TryGetProperty("snippet", out var snippet) ? snippet.GetString() ?? "" : "",
-                !labels.Contains("UNREAD"), labels.Contains("STARRED"), false));
+                !labelSet.Contains("UNREAD"), labelSet.Contains("STARRED"), false));
             }
         }
-        return result;
+        return messageList;
     }
 
     public async Task<MailMessage> GetMessageAsync(Account account, string secret, string serverId, CancellationToken ct)

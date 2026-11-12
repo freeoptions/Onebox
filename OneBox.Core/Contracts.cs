@@ -17,6 +17,8 @@ public interface IMailStore
         string? query, int limit = 200, bool starredOnly = false, CancellationToken cancellationToken = default);
     Task UpsertMessagesAsync(IEnumerable<MailMessage> messages, CancellationToken cancellationToken = default);
     Task ResetFolderAsync(Guid accountId, string folderId, CancellationToken cancellationToken = default);
+    Task RemoveMissingMessagesAsync(Guid accountId, string folderId, IReadOnlySet<string> serverIdSet,
+        DateTimeOffset since, CancellationToken cancellationToken = default);
     Task<SyncCursor?> GetCursorAsync(Guid accountId, string folderId, CancellationToken cancellationToken = default);
     Task SaveCursorAsync(SyncCursor cursor, CancellationToken cancellationToken = default);
     Task EnqueueAsync(PendingAction action, CancellationToken cancellationToken = default);

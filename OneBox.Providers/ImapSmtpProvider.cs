@@ -15,6 +15,9 @@ public sealed class ImapSmtpProvider(ProviderKind kind, MailProxy? proxy = null)
     public ProviderKind Kind { get; } = kind is ProviderKind.Qq or ProviderKind.NetEase or ProviderKind.GmailImap
         ? kind : throw new ArgumentOutOfRangeException(nameof(kind));
     public long? CurrentUidValidity { get; private set; }
+    public long? CurrentHighestUid { get; private set; }
+    public SyncCursor? CurrentJunkCursor { get; private set; }
+    public IReadOnlySet<string> CurrentMessageIdSet { get; private set; } = new HashSet<string>();
 
     public static (string Imap, int ImapPort, string Smtp, int SmtpPort) Servers(string address)
     {
@@ -30,7 +33,7 @@ public sealed class ImapSmtpProvider(ProviderKind kind, MailProxy? proxy = null)
         };
     }
 
-    private async Task<ImapClient> OpenImapAsync(Account account, string secret, CancellationToken ct)
+    internal async Task<ImapClient> OpenImapAsync(Account account, string secret, CancellationToken ct)
     {
         var endpoint = Servers(account.Address);
         var client = new ImapClient();
@@ -106,38 +109,84 @@ public sealed class ImapSmtpProvider(ProviderKind kind, MailProxy? proxy = null)
         return new ConnectionCheck(receivingError is null, sendingError is null, receivingError, sendingError);
     }
 
+    internal static async Task<IMailFolder?> FindJunkFolderAsync(ImapClient client, CancellationToken ct)
+    {
+        var junk = (client.Capabilities & (ImapCapabilities.SpecialUse | ImapCapabilities.XList)) != 0
+            ? client.GetFolder(SpecialFolder.Junk) : null;
+        if (junk is not null) return junk;
+        foreach (var folderNamespace in client.PersonalNamespaces)
+        {
+            var folderList = await client.GetFoldersAsync(folderNamespace, StatusItems.None, false, ct);
+            junk = folderList.FirstOrDefault(folder => folder.Attributes.HasFlag(FolderAttributes.Junk));
+            junk ??= folderList.FirstOrDefault(folder => !folder.Attributes.HasFlag(FolderAttributes.Trash) &&
+                (folder.Name.Equals("Junk", StringComparison.OrdinalIgnoreCase) ||
+                 folder.Name.Equals("Spam", StringComparison.OrdinalIgnoreCase) || folder.Name is "垃圾邮件" or "垃圾箱"));
+            if (junk is not null) return junk;
+        }
+        return null;
+    }
+
     public async Task<IReadOnlyList<MailMessage>> GetRecentInboxAsync(Account account, string secret,
         SyncCursor? cursor, DateTimeOffset since, CancellationToken ct)
     {
         using var client = await OpenImapAsync(account, secret, ct);
-        var inbox = client.Inbox;
-        await inbox.OpenAsync(FolderAccess.ReadOnly, ct);
-        CurrentUidValidity = inbox.UidValidity;
-        var uidList = await inbox.SearchAsync(SearchQuery.DeliveredAfter(since.UtcDateTime.Date), ct);
-        var orderedUidList = uidList.OrderByDescending(uid => uid.Id).ToList();
-        var fullScan = cursor is null || cursor.UidValidity != CurrentUidValidity;
-        var recentUidList = fullScan ? orderedUidList : orderedUidList.Take(300)
-            .Concat(orderedUidList.Where(uid => uid.Id > (cursor!.HighestUid ?? 0)))
-            .Distinct().ToList();
-        if (recentUidList.Count == 0) return [];
-        var messageList = new List<MailMessage>(recentUidList.Count);
-        foreach (var uidBatchList in CreateFetchBatches(recentUidList))
+        var folderList = new List<IMailFolder> { client.Inbox };
+        var junk = await FindJunkFolderAsync(client, ct);
+        if (junk is not null && junk.FullName != client.Inbox.FullName) folderList.Add(junk);
+        var messageList = new List<MailMessage>();
+        var messageIdSet = new HashSet<string>();
+        CurrentJunkCursor = null;
+        foreach (var folder in folderList)
         {
-            var summaryList = await inbox.FetchAsync(uidBatchList, MessageSummaryItems.Envelope |
-                MessageSummaryItems.Flags | MessageSummaryItems.InternalDate | MessageSummaryItems.BodyStructure, ct);
-            messageList.AddRange(summaryList.Select(summary => new MailMessage(
-                account.Id, summary.UniqueId.Id.ToString(), "INBOX",
-                summary.Envelope?.Subject ?? "（无主题）",
-                summary.Envelope?.From.Mailboxes.FirstOrDefault()?.Name ?? "",
-                summary.Envelope?.From.Mailboxes.FirstOrDefault()?.Address ?? "",
-                string.Join(", ", summary.Envelope?.To.Mailboxes.Select(mailbox => mailbox.Address) ?? []),
-                summary.InternalDate ?? DateTimeOffset.MinValue,
-                "", summary.Flags?.HasFlag(MessageFlags.Seen) ?? false,
-                summary.Flags?.HasFlag(MessageFlags.Flagged) ?? false,
-                summary.Attachments?.Any() ?? false)));
+            await folder.OpenAsync(FolderAccess.ReadOnly, ct);
+            var isInbox = folder == client.Inbox;
+            if (isInbox)
+            {
+                CurrentUidValidity = folder.UidValidity;
+                CurrentHighestUid = folder.UidNext is UniqueId next ? next.Id - 1L : null;
+            }
+            var uidList = await folder.SearchAsync(SearchQuery.DeliveredAfter(since.UtcDateTime.Date), ct);
+            var orderedUidList = uidList.OrderByDescending(uid => uid.Id).ToList();
+            string ServerId(UniqueId uid) => new ImapMessageLocation(isInbox ? null : folder.FullName,
+                isInbox ? null : folder.UidValidity, uid).ServerId;
+            foreach (var uid in uidList) messageIdSet.Add(ServerId(uid));
+            if (!isInbox)
+                CurrentJunkCursor = new SyncCursor(account.Id, "JUNK", null, folder.UidValidity,
+                    folder.UidNext is UniqueId junkNext ? junkNext.Id - 1L :
+                        orderedUidList.Select(uid => (long)uid.Id).DefaultIfEmpty(0).Max(), DateTimeOffset.UtcNow);
+            var fullScan = !isInbox || cursor is null || cursor.UidValidity != CurrentUidValidity;
+            var recentUidList = fullScan ? orderedUidList : orderedUidList.Take(300)
+                .Concat(orderedUidList.Where(uid => uid.Id > (cursor!.HighestUid ?? 0)))
+                .Distinct().ToList();
+            foreach (var uidBatchList in CreateFetchBatches(recentUidList))
+            {
+                var summaryList = await folder.FetchAsync(uidBatchList, MessageSummaryItems.Envelope |
+                    MessageSummaryItems.Flags | MessageSummaryItems.InternalDate | MessageSummaryItems.BodyStructure, ct);
+                messageList.AddRange(summaryList.Select(summary => new MailMessage(
+                    account.Id, ServerId(summary.UniqueId), "INBOX",
+                    summary.Envelope?.Subject ?? "（无主题）", summary.Envelope?.From.Mailboxes.FirstOrDefault()?.Name ?? "",
+                    summary.Envelope?.From.Mailboxes.FirstOrDefault()?.Address ?? "",
+                    string.Join(", ", summary.Envelope?.To.Mailboxes.Select(mailbox => mailbox.Address) ?? []),
+                    summary.InternalDate ?? DateTimeOffset.MinValue,
+                    "", summary.Flags?.HasFlag(MessageFlags.Seen) ?? false,
+                    summary.Flags?.HasFlag(MessageFlags.Flagged) ?? false,
+                    summary.Attachments?.Any() ?? false)));
+            }
         }
+        CurrentMessageIdSet = messageIdSet;
         await client.DisconnectAsync(true, ct);
         return messageList;
+    }
+
+    private static async Task<(IMailFolder Folder, UniqueId Uid)> OpenMessageFolderAsync(
+        ImapClient client, string serverId, FolderAccess access, CancellationToken ct)
+    {
+        var location = ImapMessageLocation.Parse(serverId);
+        var folder = location.FolderName is null ? client.Inbox : await client.GetFolderAsync(location.FolderName, ct);
+        await folder.OpenAsync(access, ct);
+        if (location.UidValidity is uint validity && folder.UidValidity != validity)
+            throw new MessageNotFoundException("邮件所在文件夹已重建，请重新同步后打开邮件。");
+        return (folder, location.Uid);
     }
 
     internal static IEnumerable<IList<UniqueId>> CreateFetchBatches(IEnumerable<UniqueId> uidList)
@@ -150,9 +199,7 @@ public sealed class ImapSmtpProvider(ProviderKind kind, MailProxy? proxy = null)
     public async Task<MailMessage> GetMessageAsync(Account account, string secret, string serverId, CancellationToken ct)
     {
         using var client = await OpenImapAsync(account, secret, ct);
-        var inbox = client.Inbox;
-        await inbox.OpenAsync(FolderAccess.ReadOnly, ct);
-        var uid = new UniqueId(uint.Parse(serverId));
+        var (inbox, uid) = await OpenMessageFolderAsync(client, serverId, FolderAccess.ReadOnly, ct);
         using var mime = await inbox.GetMessageAsync(uid, ct);
         var htmlBody = await InlineImages.ResolveAsync(mime, account.Id, serverId, InlineImages.CacheDirectory, ct);
         var result = new MailMessage(account.Id, serverId, "INBOX", mime.Subject ?? "（无主题）",
@@ -169,18 +216,17 @@ public sealed class ImapSmtpProvider(ProviderKind kind, MailProxy? proxy = null)
         bool? isRead, bool? isStarred, CancellationToken ct)
     {
         using var client = await OpenImapAsync(account, secret, ct);
-        var inbox = client.Inbox;
-        await inbox.OpenAsync(FolderAccess.ReadWrite, ct);
-        var uids = new[] { new UniqueId(uint.Parse(serverId)) };
+        var (inbox, uid) = await OpenMessageFolderAsync(client, serverId, FolderAccess.ReadWrite, ct);
+        var uidList = new[] { uid };
         if (isRead is bool read)
         {
-            if (read) await inbox.AddFlagsAsync(uids, MessageFlags.Seen, true, ct);
-            else await inbox.RemoveFlagsAsync(uids, MessageFlags.Seen, true, ct);
+            if (read) await inbox.AddFlagsAsync(uidList, MessageFlags.Seen, true, ct);
+            else await inbox.RemoveFlagsAsync(uidList, MessageFlags.Seen, true, ct);
         }
         if (isStarred is bool starred)
         {
-            if (starred) await inbox.AddFlagsAsync(uids, MessageFlags.Flagged, true, ct);
-            else await inbox.RemoveFlagsAsync(uids, MessageFlags.Flagged, true, ct);
+            if (starred) await inbox.AddFlagsAsync(uidList, MessageFlags.Flagged, true, ct);
+            else await inbox.RemoveFlagsAsync(uidList, MessageFlags.Flagged, true, ct);
         }
         await client.DisconnectAsync(true, ct);
     }
@@ -189,8 +235,8 @@ public sealed class ImapSmtpProvider(ProviderKind kind, MailProxy? proxy = null)
         string serverId, CancellationToken ct)
     {
         using var client = await OpenImapAsync(account, secret, ct);
-        await client.Inbox.OpenAsync(FolderAccess.ReadOnly, ct);
-        using var mime = await client.Inbox.GetMessageAsync(new UniqueId(uint.Parse(serverId)), ct);
+        var (folder, uid) = await OpenMessageFolderAsync(client, serverId, FolderAccess.ReadOnly, ct);
+        using var mime = await folder.GetMessageAsync(uid, ct);
         var attachmentList = mime.Attachments.Select((part, index) =>
             new MailAttachment(account.Id, serverId, index.ToString(),
                 part is MimePart filePart ? filePart.FileName ?? "附件" : part.ContentDisposition?.FileName ?? "邮件附件.eml",
@@ -204,8 +250,8 @@ public sealed class ImapSmtpProvider(ProviderKind kind, MailProxy? proxy = null)
     {
         if (account.Id != attachment.AccountId) throw new InvalidOperationException("附件账号不匹配");
         using var client = await OpenImapAsync(account, secret, ct);
-        await client.Inbox.OpenAsync(FolderAccess.ReadOnly, ct);
-        using var mime = await client.Inbox.GetMessageAsync(new UniqueId(uint.Parse(attachment.MessageServerId)), ct);
+        var (folder, uid) = await OpenMessageFolderAsync(client, attachment.MessageServerId, FolderAccess.ReadOnly, ct);
+        using var mime = await folder.GetMessageAsync(uid, ct);
         var part = mime.Attachments.ElementAt(int.Parse(attachment.PartId));
         await MimeAttachments.SaveAsync(part, outputPath, ct);
         await client.DisconnectAsync(true, ct);
