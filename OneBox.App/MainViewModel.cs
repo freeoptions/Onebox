@@ -7,7 +7,7 @@ using OneBox.Providers;
 
 namespace OneBox.App;
 
-public sealed record NoticeEntry(string Text, string Kind, DateTimeOffset RecordedAt)
+public sealed record NoticeEntry(string Text, string Kind, DateTimeOffset RecordedAt, string Details)
 {
     public string TimeText => RecordedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss");
 }
@@ -81,10 +81,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string NoticeKind => _noticeList.Count == 0 ? "状态" : _noticeList[^1].Kind;
     public string NoticeTimeText => _noticeList.Count == 0 ? "" : _noticeList[^1].TimeText;
     public IReadOnlyList<NoticeEntry> RecentNoticeList => _noticeList.AsEnumerable().Reverse().ToArray();
-    public void Notify(string text, string kind)
+    public void Notify(string text, string kind, string details = "")
     {
         _noticeList.RemoveAll(item => item.Kind == "进度");
-        _noticeList.Add(new NoticeEntry(text, kind, DateTimeOffset.Now));
+        _noticeList.Add(new NoticeEntry(text, kind, DateTimeOffset.Now, details));
         if (_noticeList.Count > 20) _noticeList.RemoveAt(0);
         OnPropertyChanged(nameof(NoticeText));
         OnPropertyChanged(nameof(NoticeKind));

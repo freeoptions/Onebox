@@ -20,6 +20,8 @@ public partial class MainWindow : Window
     private readonly string _dataDirectory;
     private readonly string _readerSettingsPath;
     private readonly string _syncSchedulePath;
+    private readonly DiagnosticLog _listenerLog;
+    private bool _listenerLogWriteWarning;
     private SyncScheduleSettings _syncScheduleSettings = new();
     private ReaderSettings _readerSettings = new();
     private readonly WindowsCredentialVault _vault = new();
@@ -60,6 +62,7 @@ public partial class MainWindow : Window
         _dataDirectory = AppContext.BaseDirectory;
         _readerSettingsPath = System.IO.Path.Combine(_dataDirectory, "reader-settings.json");
         _syncSchedulePath = System.IO.Path.Combine(_dataDirectory, "sync-schedule.json");
+        _listenerLog = new DiagnosticLog(System.IO.Path.Combine(_dataDirectory, "logs"));
         _store = new SqliteMailStore(System.IO.Path.Combine(_dataDirectory, "mail.db"));
         _providerMap = new Dictionary<ProviderKind, IMailProvider>
         {
@@ -94,6 +97,7 @@ public partial class MainWindow : Window
         _pollTimer.Tick += async (_, _) =>
         {
             UpdateSyncProblem();
+            if (_listenersStarted) ReconcileInboxListeners();
             await SyncAllAsync();
             await ProcessInboxChangesAsync();
         };
@@ -136,9 +140,9 @@ public partial class MainWindow : Window
 
     private void OnNoticeHistoryMouseLeave(object sender, System.Windows.Input.MouseEventArgs e) => _noticePopupCloseTimer.Start();
 
-    private void Notify(string text, string kind)
+    private void Notify(string text, string kind, string details = "")
     {
-        _viewModel.Notify(text, kind);
+        _viewModel.Notify(text, kind, details);
     }
 
     private Forms.ContextMenuStrip CreateTrayMenu()
@@ -235,10 +239,22 @@ public partial class MainWindow : Window
             foreach (var junk in new[] { false, true })
             {
                 var key = (account.Id, junk);
-                if (_inboxListenerMap.ContainsKey(key)) continue;
+                if (_inboxListenerMap.TryGetValue(key, out var existing))
+                {
+                    if (!existing.Task.IsFaulted && !existing.Task.IsCanceled) continue;
+                    var error = existing.Task.Exception?.GetBaseException() ?? new TaskCanceledException("监听任务意外取消");
+                    string details;
+                    try { details = SyncFailure.Describe(error, account.Provider, "监听任务意外结束", _vault.Read(account.Id), _googleClientSecret).Details; }
+                    catch (Exception) { details = $"异常类型：{error.GetType().FullName}\n无法读取凭据进行脱敏，已省略原始异常消息。"; }
+                    StopInboxListener(key);
+                    var text = $"{account.Address} · 监听任务意外结束，正在重新启动";
+                    _listenerLog.TryAppend("告警", text, details);
+                    Notify(text, "告警", details);
+                }
                 var cancellation = new CancellationTokenSource();
                 var token = cancellation.Token;
                 var listener = new ImapIdleListener(account, provider, _vault, _store, junk);
+                var proxySettings = _readerSettings.Proxy;
                 var task = Task.Run(() => listener.RunAsync(
                     () => Dispatcher.BeginInvoke(new Action(async () =>
                     {
@@ -246,10 +262,21 @@ public partial class MainWindow : Window
                         _inboxChangeAccountSet.Add(account.Id);
                         await ProcessInboxChangesAsync();
                     })),
-                    (text, kind) => Dispatcher.BeginInvoke(new Action(() =>
+                    entry =>
                     {
-                        if (!_exiting && !token.IsCancellationRequested) Notify(text, kind);
-                    })), token));
+                        var details = $"代理方式：{proxySettings.Mode}\n" + entry.Details;
+                        var written = _listenerLog.TryAppend(entry.Kind, entry.Text, details);
+                        Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            if (_exiting || token.IsCancellationRequested) return;
+                            if (entry.ShowInHistory) Notify(entry.Text, entry.Kind, details);
+                            if (!written && !_listenerLogWriteWarning)
+                            {
+                                _listenerLogWriteWarning = true;
+                                Notify("诊断日志无法写入，请检查软件目录的写入权限", "告警");
+                            }
+                        }));
+                    }, token));
                 _inboxListenerMap.Add(key, (cancellation, task));
             }
         }

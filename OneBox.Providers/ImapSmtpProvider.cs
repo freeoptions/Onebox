@@ -33,14 +33,16 @@ public sealed class ImapSmtpProvider(ProviderKind kind, MailProxy? proxy = null)
         };
     }
 
-    internal async Task<ImapClient> OpenImapAsync(Account account, string secret, CancellationToken ct)
+    internal async Task<ImapClient> OpenImapAsync(Account account, string secret, CancellationToken ct, Action<string>? onStage = null)
     {
         var endpoint = Servers(account.Address);
         var client = new ImapClient();
         try
         {
             client.ProxyClient = _proxy.CreateClient(endpoint.Imap, endpoint.ImapPort);
+            onStage?.Invoke($"连接IMAP服务器及TLS握手（{endpoint.Imap}:{endpoint.ImapPort}，代理：{(client.ProxyClient is null ? "直连" : $"{client.ProxyClient.ProxyHost}:{client.ProxyClient.ProxyPort}")}）");
             await client.ConnectAsync(endpoint.Imap, endpoint.ImapPort, SecureSocketOptions.SslOnConnect, ct);
+            onStage?.Invoke("IMAP登录认证");
             await client.AuthenticateAsync(account.Address, secret, ct);
             if (Kind == ProviderKind.NetEase && client.Capabilities.HasFlag(ImapCapabilities.Id))
             {

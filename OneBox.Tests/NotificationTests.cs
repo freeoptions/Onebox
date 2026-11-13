@@ -42,11 +42,12 @@ public sealed class NotificationTests
         Assert.AreEqual("消息24", model.NoticeText);
         Assert.AreEqual(model.RecentNoticeList[0].TimeText, model.NoticeTimeText);
         Assert.AreEqual(savedNotice.TimeText, savedNotice.RecordedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss"));
-        model.Notify("下载失败", "失败");
+        model.Notify("下载失败", "失败", "脱敏异常详情");
         Assert.AreEqual("下载失败", model.NoticeText);
         Assert.AreEqual("失败", model.NoticeKind);
         Assert.AreEqual("下载失败", model.RecentNoticeList[0].Text);
         Assert.AreEqual("失败", model.RecentNoticeList[0].Kind);
+        Assert.AreEqual("脱敏异常详情", model.RecentNoticeList[0].Details);
         Assert.AreEqual(model.RecentNoticeList[0].TimeText, model.NoticeTimeText);
     }
 }

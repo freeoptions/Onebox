@@ -80,7 +80,7 @@
                             </Style.Triggers>
                           </Style></Border.Style>
                           <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                             <TextBlock Text="{Binding Kind}" FontWeight="SemiBold" Margin="0,0,12,0">
                               <TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
                                 <Style.Triggers>
@@ -92,6 +92,13 @@
                             </TextBlock>
                             <TextBlock Grid.Column="1" Text="{Binding Text}" TextWrapping="Wrap" Foreground="{StaticResource InkBrush}"/>
                             <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding TimeText}" Foreground="{StaticResource MutedBrush}" FontSize="{DynamicResource FontSize11}" Margin="0,5,0,0"/>
+                            <Expander Grid.Row="2" Grid.ColumnSpan="2" Header="查看诊断详情" Margin="0,8,0,0" FontSize="{DynamicResource FontSize11}">
+                              <Expander.Style><Style TargetType="Expander"><Setter Property="Visibility" Value="Visible"/>
+                                <Style.Triggers><DataTrigger Binding="{Binding Details}" Value=""><Setter Property="Visibility" Value="Collapsed"/></DataTrigger></Style.Triggers>
+                              </Style></Expander.Style>
+                              <TextBox Text="{Binding Details, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" MaxHeight="220"
+                                       VerticalScrollBarVisibility="Auto" Background="Transparent" Margin="0,6,0,0"/>
+                            </Expander>
                           </Grid>
                         </Border>
                       </DataTemplate></ItemsControl.ItemTemplate>
