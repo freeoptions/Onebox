@@ -35,6 +35,10 @@ public partial class MainWindow : Window
     private string _lastSelectedText = "";
     private bool _savingImage;
     private readonly Forms.NotifyIcon _tray;
+    private readonly Icon _trayBaseIcon;
+    private Icon? _trayBadgeIcon;
+    private int _trayUnreadCount = -1;
+    private readonly DesktopNotificationService _desktopNotifications;
     private Task<CoreWebView2Environment>? _webEnvironmentTask;
     private HtmlMessageRenderer? _htmlRenderer;
     private readonly MailLinkNavigation _mailLinkNavigation;
@@ -46,6 +50,7 @@ public partial class MainWindow : Window
     private bool _listenersStarted;
     private readonly Dictionary<(Guid AccountId, bool Junk), (CancellationTokenSource Cancellation, Task Task)> _inboxListenerMap = [];
     private readonly HashSet<Guid> _inboxChangeAccountSet = [];
+    private readonly HashSet<Guid> _inboxRecoveryAccountSet = [];
     private bool _allowRemoteImages;
     private CancellationTokenSource? _bodyLoadCancellation;
     private Guid? _selectedAccount;
@@ -59,6 +64,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         _mailLinkNavigation = new MailLinkNavigation(OpenMailLink);
         DataContext = _viewModel;
+        _desktopNotifications = new DesktopNotificationService(Dispatcher, OpenNotificationMail);
         _dataDirectory = AppContext.BaseDirectory;
         _readerSettingsPath = System.IO.Path.Combine(_dataDirectory, "reader-settings.json");
         _syncSchedulePath = System.IO.Path.Combine(_dataDirectory, "sync-schedule.json");
@@ -82,10 +88,11 @@ public partial class MainWindow : Window
                     _providerMap[ProviderKind.Gmail] = new GmailProvider(clientId, _googleClientSecret, _vault, _mailProxy);
             }
         }
+        _trayBaseIcon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? (Icon)SystemIcons.Application.Clone();
         _tray = new Forms.NotifyIcon
         {
             Text = "OneBox - 多邮箱收发",
-            Icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? SystemIcons.Application,
+            Icon = _trayBaseIcon,
             Visible = true,
             ContextMenuStrip = CreateTrayMenu()
         };
@@ -131,6 +138,26 @@ public partial class MainWindow : Window
     }
 
     private void OnShowNoticeHistory(object sender, RoutedEventArgs e) => NoticeHistoryPopup.IsOpen = true;
+
+    private async void OnCopyNotice(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.Button { DataContext: NoticeEntry entry } button) return;
+        button.IsEnabled = false;
+        try
+        {
+            var text = $"{entry.TimeText}\n{entry.Kind}：{entry.Text}";
+            if (!string.IsNullOrWhiteSpace(entry.Details)) text += $"\n\n{entry.Details}";
+            System.Windows.Clipboard.SetDataObject(text, true);
+            button.Content = "已复制";
+        }
+        catch (System.Runtime.InteropServices.ExternalException)
+        {
+            button.Content = "复制失败，请重试";
+        }
+        await Task.Delay(TimeSpan.FromSeconds(2));
+        button.Content = "复制";
+        button.IsEnabled = true;
+    }
 
     private void OnNoticeHistoryMouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
     {
@@ -262,6 +289,14 @@ public partial class MainWindow : Window
                         _inboxChangeAccountSet.Add(account.Id);
                         await ProcessInboxChangesAsync();
                     })),
+                    () => Dispatcher.BeginInvoke(new Action(async () =>
+                    {
+                        if (_exiting || token.IsCancellationRequested) return;
+                        var currentAccount = _viewModel.Accounts.FirstOrDefault(item => item.Id == account.Id);
+                        if (currentAccount?.Status != ConnectionStatus.Failed) return;
+                        _inboxRecoveryAccountSet.Add(account.Id);
+                        await ProcessInboxChangesAsync();
+                    })),
                     entry =>
                     {
                         var details = $"代理方式：{proxySettings.Mode}\n" + entry.Details;
@@ -285,14 +320,22 @@ public partial class MainWindow : Window
     private async Task ProcessInboxChangesAsync()
     {
         if (_syncing || _exiting) return;
-        foreach (var id in _inboxChangeAccountSet.ToArray())
+        foreach (var id in _inboxChangeAccountSet.Concat(_inboxRecoveryAccountSet).Distinct().ToArray())
         {
             if (_syncing || _exiting) return;
             var account = _viewModel.Accounts.FirstOrDefault(account => account.Id == id);
+            var recovered = _inboxRecoveryAccountSet.Remove(id);
             if (account is null) { _inboxChangeAccountSet.Remove(id); continue; }
-            if (account.Status is ConnectionStatus.Failed or ConnectionStatus.NeedsAuthorization) continue;
+            if (account.Status == ConnectionStatus.NeedsAuthorization) continue;
+            if (account.Status == ConnectionStatus.Failed && !recovered) continue;
+            if (!_inboxChangeAccountSet.Contains(id) && account.Status != ConnectionStatus.Failed) continue;
             _inboxChangeAccountSet.Remove(id);
-            await SyncAllAsync(force: true, accountId: id);
+            try { await SyncAllAsync(force: true, accountId: id); }
+            finally
+            {
+                // 同步期间两个文件夹可能先后确认重连，同一账号只补同步一次。
+                _inboxRecoveryAccountSet.Remove(id);
+            }
         }
     }
 
@@ -300,6 +343,7 @@ public partial class MainWindow : Window
     {
         var selectedKey = (MessageList.SelectedItem as MessageRow)?.Message.Key;
         var messages = await _store.GetMessagesAsync(_selectedAccount, "INBOX", _viewModel.SearchText, starredOnly: _starredOnly);
+        await UpdateTrayUnreadCountAsync();
         _viewModel.ShowMessages(messages);
         if (selectedKey is not null)
             MessageList.SelectedItem = _viewModel.Messages.FirstOrDefault(row => row.Message.Key == selectedKey);
@@ -307,6 +351,19 @@ public partial class MainWindow : Window
             ? _viewModel.Accounts.FirstOrDefault(account => account.Id == id)?.DisplayName ?? "收件箱"
             : "所有收件箱";
         UpdateSyncProblem();
+    }
+
+    private async Task UpdateTrayUnreadCountAsync()
+    {
+        var unreadCount = await _store.GetUnreadCountAsync();
+        if (_exiting || _trayUnreadCount == unreadCount) return;
+        var icon = unreadCount > 0 ? TrayIconBadge.Create(_trayBaseIcon, unreadCount) : null;
+        var previousIcon = _trayBadgeIcon;
+        _tray.Icon = icon ?? _trayBaseIcon;
+        _tray.Text = unreadCount > 0 ? $"OneBox · {unreadCount}封未读邮件" : "OneBox - 多邮箱收发";
+        _trayBadgeIcon = icon;
+        _trayUnreadCount = unreadCount;
+        previousIcon?.Dispose();
     }
 
     private async Task SyncAllAsync(bool force = false, Guid? accountId = null)
@@ -351,9 +408,13 @@ public partial class MainWindow : Window
                     await ProcessPendingAsync(account, provider, secret);
                     stage = "读取收件箱";
                     var cursor = await _store.GetCursorAsync(account.Id, "INBOX");
+                    var previousJunkCursor = await _store.GetCursorAsync(account.Id, "JUNK");
                     var messageList = await provider.GetRecentInboxAsync(account, secret, cursor, DateTimeOffset.UtcNow.AddDays(-90), CancellationToken.None);
                     stage = "保存本地邮件";
                     var validity = (provider as ImapSmtpProvider)?.CurrentUidValidity;
+                    var existingIdSet = await _store.GetMessageIdSetAsync(account.Id);
+                    var notificationList = NewMailNotifications.Select(messageList, cursor, validity, existingIdSet,
+                        previousJunkCursor, (provider as ImapSmtpProvider)?.CurrentJunkCursor);
                     if (validity is not null && cursor?.UidValidity is not null && validity != cursor.UidValidity)
                         await _store.ResetFolderAsync(account.Id, "INBOX");
                     await _store.UpsertMessagesAsync(messageList);
@@ -366,6 +427,7 @@ public partial class MainWindow : Window
                         (provider as GmailProvider)?.LatestHistoryId, validity,
                         (provider as ImapSmtpProvider)?.CurrentHighestUid ??
                             messageList.Select(message => long.TryParse(message.ServerId, out var uid) ? uid : 0).DefaultIfEmpty(0).Max(), DateTimeOffset.UtcNow));
+                    _desktopNotifications.Enqueue(account, notificationList);
                     await _store.UpsertAccountAsync(account with { Status = ConnectionStatus.Online, LastError = null });
                     _syncScheduleSettings.AccountMap[account.Id] = new SyncSchedule(DateTimeOffset.UtcNow);
                     _syncScheduleSettings.Save(_syncSchedulePath);
@@ -637,6 +699,7 @@ public partial class MainWindow : Window
                 UpdateSyncProblem();
             }
             _viewModel.RefreshMailCounts();
+            if (readFlag) await UpdateTrayUnreadCountAsync();
             if (ReferenceEquals(MessageList.SelectedItem, row))
             {
                 ReadButton.Content = row.Message.IsRead ? "标为未读" : "标为已读";
@@ -911,6 +974,7 @@ public partial class MainWindow : Window
         if (proxyChanged)
             foreach (var key in _inboxListenerMap.Keys.ToArray()) StopInboxListener(key);
         _readerSettings = settings;
+        _desktopNotifications.ApplySettings(settings.Notifications);
         SelectionAutoCopy.Enabled = settings.AutoCopySelectedText;
         _lastSelectedText = "";
         if (settings.AutoCopySelectedText) _selectionCopyTimer.Start();
@@ -934,7 +998,44 @@ public partial class MainWindow : Window
             _allowRemoteImages = _viewModel.AutoLoadRemoteImages;
             await ReloadSelectedBodyAsync();
         };
+        window.TestNotificationRequested += (_, _) => _desktopNotifications.ShowPreview();
         window.ShowDialog();
+    }
+
+    private async void OpenNotificationMail(MailMessage message)
+    {
+        try
+        {
+            var account = _viewModel.Accounts.FirstOrDefault(item => item.Id == message.AccountId);
+            if (account is null) return;
+            if (OwnedWindows.OfType<SettingsWindow>().FirstOrDefault() is SettingsWindow settingsWindow) settingsWindow.Close();
+            ShowFromTray();
+            _viewModel.SearchText = "";
+            _searchTimer.Stop();
+            _loadingAccounts = true;
+            try { AccountsList.SelectedItem = account; }
+            finally { _loadingAccounts = false; }
+            _selectedAccount = account.Id;
+            _starredOnly = false;
+            ShowInbox();
+            UpdateNavigationSelection();
+            await LoadMessagesAsync();
+            var row = _viewModel.Messages.FirstOrDefault(item => item.Message.Key == message.Key);
+            if (row is null)
+            {
+                // 通知排队期间可能有更多来信，目标邮件不一定仍在列表的默认范围内。
+                if (!(await _store.GetMessageIdSetAsync(account.Id)).Contains(message.ServerId)) return;
+                row = new MessageRow(message, account.DisplayName);
+                _viewModel.Messages.Add(row);
+            }
+            MessageList.SelectedItem = row;
+            MessageList.ScrollIntoView(row);
+        }
+        catch (Exception error)
+        {
+            var failure = SyncFailure.Describe(error, ProviderKind.Gmail, "打开通知邮件", _googleClientSecret);
+            Notify("无法打开通知邮件，请在收件箱中重试", "失败", failure.Details);
+        }
     }
 
     private async Task ReloadSelectedBodyAsync()
@@ -982,8 +1083,10 @@ public partial class MainWindow : Window
         {
             foreach (var key in _inboxListenerMap.Keys.Where(key => key.AccountId == account.Id).ToArray()) StopInboxListener(key);
             _inboxChangeAccountSet.Remove(account.Id);
+            _inboxRecoveryAccountSet.Remove(account.Id);
             _vault.Delete(account.Id);
             await _store.RemoveAccountAsync(account.Id);
+            _desktopNotifications.RemoveAccount(account.Id);
             try { await Task.Run(() => InlineImages.DeleteAccount(account.Id, InlineImages.CacheDirectory)); }
             catch (Exception error) when (error is System.IO.IOException or UnauthorizedAccessException)
             {
@@ -1102,11 +1205,14 @@ public partial class MainWindow : Window
         _pollTimer.Stop();
         _searchTimer.Stop();
         _bodyLoadCancellation?.Cancel();
+        _desktopNotifications.Dispose();
         _tray.Visible = false;
         _noticePopupCloseTimer.Stop();
         NoticeHistoryPopup.IsOpen = false;
         _tray.ContextMenuStrip?.Dispose();
         _tray.Dispose();
+        _trayBadgeIcon?.Dispose();
+        _trayBaseIcon.Dispose();
         _selectionCopyTimer.Stop();
     }
 }

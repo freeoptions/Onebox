@@ -87,6 +87,90 @@ public sealed class SettingsWindowTests
                 Assert.AreEqual(ProxyMode.System, ReaderSettings.Load(path).Proxy.Mode);
                 Assert.IsFalse(ReaderSettings.Load(path).AutoLoadRemoteImages);
                 Assert.AreEqual(150, ReaderSettings.Load(path).FontScalePercent);
+                var notificationCornerBox = (ComboBox)window.FindName("NotificationCornerBox");
+                var notificationDurationBox = (ComboBox)window.FindName("NotificationDurationBox");
+                var notificationCountBox = (ComboBox)window.FindName("NotificationCountBox");
+                var notificationsBox = (CheckBox)window.FindName("NotificationsBox");
+                var notificationContentBox = (CheckBox)window.FindName("NotificationContentBox");
+                notificationCornerBox.SelectedIndex = 3;
+                notificationDurationBox.SelectedValue = "10";
+                notificationCountBox.SelectedValue = "1";
+                notificationContentBox.IsChecked = false;
+                notificationContentBox.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                notificationsBox.IsChecked = false;
+                notificationsBox.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                var notificationSettings = ReaderSettings.Load(path).Notifications;
+                Assert.AreEqual(NotificationCorner.TopLeft, notificationSettings.Corner);
+                Assert.AreEqual(10, notificationSettings.DurationSeconds);
+                Assert.AreEqual(1, notificationSettings.MaxVisible);
+                Assert.IsFalse(notificationSettings.ShowContent);
+                Assert.IsFalse(notificationSettings.Enabled);
+                var previewCount = 0;
+                window.TestNotificationRequested += (_, _) => previewCount++;
+                ((Button)window.FindName("TestNotificationButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                Assert.AreEqual(1, previewCount);
+                var notificationAccount = new Account(Guid.NewGuid(), "example@qq.com", "测试", ProviderKind.Qq);
+                var notificationMessage = new MailMessage(notificationAccount.Id, "1", "INBOX", new string('邮', 200),
+                    new string('名', 100), "sender@example.com", "", DateTimeOffset.Now, new string('摘', 200), false, false, false);
+                double? withPreviewHeight = null;
+                foreach (var showContent in new[] { true, false })
+                {
+                    var openCount = 0;
+                    var notificationWindow = new MailNotificationWindow(notificationAccount, notificationMessage,
+                        notificationSettings with { ShowContent = showContent }, () => openCount++);
+                    try
+                    {
+                        Assert.AreEqual(SizeToContent.Height, notificationWindow.SizeToContent, "通知高度应随内容收紧");
+                        Assert.IsFalse(notificationWindow.ShowActivated);
+                        Assert.IsFalse(notificationWindow.ShowInTaskbar);
+                        Assert.IsTrue(notificationWindow.Topmost);
+                        var notificationContent = (FrameworkElement)notificationWindow.Content;
+                        notificationContent.Measure(new Size(368, double.PositiveInfinity));
+                        var contentHeight = notificationContent.DesiredSize.Height;
+                        notificationContent.Arrange(new Rect(0, 0, 368, contentHeight));
+                        notificationContent.UpdateLayout();
+                        var subjectText = (TextBlock)notificationWindow.FindName("SubjectText");
+                        var previewText = (TextBlock)notificationWindow.FindName("PreviewText");
+                        Assert.IsTrue(subjectText.ActualWidth > 0);
+                        var previewBottom = previewText.TranslatePoint(new Point(0, previewText.ActualHeight), notificationContent).Y;
+                        if (showContent)
+                        {
+                            withPreviewHeight = contentHeight;
+                            Assert.IsTrue(previewBottom <= contentHeight - 16, "摘要和底边应保留紧凑内边距");
+                        }
+                        else Assert.IsTrue(contentHeight < withPreviewHeight, "无摘要的卡片应更矮");
+                        if (!showContent)
+                        {
+                            Assert.AreEqual("点击查看邮件", subjectText.Text);
+                            Assert.AreEqual(Visibility.Collapsed, previewText.Visibility, "没有摘要时应收起整行和间距");
+                        }
+                        Assert.AreEqual(0, openCount);
+                        var closed = false;
+                        notificationWindow.Closed += (_, _) => closed = true;
+                        var dismissButton = (Button)notificationWindow.FindName(showContent ? "DismissButton" : "OpenButton");
+                        dismissButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                        dismissButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                        Assert.IsFalse(closed, "应等淡出结束后再关闭并补位");
+                        Assert.IsTrue(notificationWindow.HasAnimatedProperties, "关闭时应播放淡出动画");
+                        Assert.AreEqual(showContent ? 0 : 1, openCount, "重复点击不能重复打开邮件");
+                        var fadeFrame = new DispatcherFrame();
+                        var fadeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(20) };
+                        var fadeDeadline = DateTime.UtcNow.AddSeconds(2);
+                        var sawPartialOpacity = false;
+                        fadeTimer.Tick += (_, _) =>
+                        {
+                            sawPartialOpacity |= notificationWindow.Opacity > 0 && notificationWindow.Opacity < 1;
+                            if (closed || DateTime.UtcNow > fadeDeadline) fadeFrame.Continue = false;
+                        };
+                        fadeTimer.Start();
+                        try { Dispatcher.PushFrame(fadeFrame); }
+                        finally { fadeTimer.Stop(); }
+                        Assert.IsTrue(sawPartialOpacity, "淡出过程中应存在半透明的中间帧");
+                        Assert.IsTrue(closed, "淡出结束后应关闭窗口");
+                        Assert.IsFalse(notificationWindow.IsVisible, "测试不应弹出通知");
+                    }
+                    finally { notificationWindow.Close(); }
+                }
                 Assert.IsFalse(window.IsVisible, "测试不应打开设置窗口");
 
                 using var refusedProxy = new System.Net.Sockets.Socket(System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp);

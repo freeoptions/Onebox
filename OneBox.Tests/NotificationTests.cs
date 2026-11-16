@@ -20,6 +20,19 @@ public sealed class NotificationTests
     }
 
     [TestMethod]
+    public void OnlyWarningsAndFailuresWithDetailsShowDiagnosticExpander()
+    {
+        var entry = new NoticeEntry("实时监听已连接", "状态", DateTimeOffset.Now, "TLS诊断详情");
+        Assert.IsFalse(entry.HasDiagnosticDetails);
+        Assert.IsFalse((entry with { Kind = "成功" }).HasDiagnosticDetails);
+        Assert.IsFalse((entry with { Kind = "进度" }).HasDiagnosticDetails);
+        Assert.IsTrue((entry with { Kind = "告警" }).HasDiagnosticDetails);
+        Assert.IsTrue((entry with { Kind = "失败" }).HasDiagnosticDetails);
+        Assert.IsFalse((entry with { Kind = "告警", Details = "" }).HasDiagnosticDetails);
+        Assert.IsFalse((entry with { Kind = "失败", Details = "  " }).HasDiagnosticDetails);
+    }
+
+    [TestMethod]
     public void LatestNoticeStaysVisibleAndHistoryRemainsWithinLimit()
     {
         var model = new MainViewModel();

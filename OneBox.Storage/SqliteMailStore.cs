@@ -183,6 +183,28 @@ public sealed class SqliteMailStore(string databasePath) : IMailStore
         return result;
     }
 
+    public async Task<int> GetUnreadCountAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = Open();
+        await connection.OpenAsync(cancellationToken);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM messages WHERE folder_id='INBOX' AND is_read=0";
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
+    }
+
+    public async Task<IReadOnlySet<string>> GetMessageIdSetAsync(Guid accountId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = Open();
+        await connection.OpenAsync(cancellationToken);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT server_id FROM messages WHERE account_id=$account";
+        command.Parameters.AddWithValue("$account", accountId.ToString("N"));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var messageIdSet = new HashSet<string>(StringComparer.Ordinal);
+        while (await reader.ReadAsync(cancellationToken)) messageIdSet.Add(reader.GetString(0));
+        return messageIdSet;
+    }
+
     public async Task UpsertMessagesAsync(IEnumerable<MailMessage> messages, CancellationToken cancellationToken = default)
     {
         await using var connection = Open();

@@ -39,6 +39,45 @@ public sealed class IdleDiagnosticsTests
     }
 
     [TestMethod]
+    public void EofAndConnectionResetGetTwoShortRetriesThenUseExistingBackoff()
+    {
+        var eof = new MailKit.Security.SslHandshakeException("TLS handshake failed",
+            new IOException("Received an unexpected EOF or 0 bytes from the transport stream."));
+        Assert.AreEqual(TimeSpan.FromSeconds(1), ImapIdleListener.QuickRetryDelay(eof, 0));
+        Assert.AreEqual(TimeSpan.FromSeconds(3), ImapIdleListener.QuickRetryDelay(eof, 1));
+        Assert.IsNull(ImapIdleListener.QuickRetryDelay(eof, 2));
+        var retry = ImapIdleListener.NextRetry(0, TimeSpan.Zero);
+        Assert.AreEqual(1, retry.Failures);
+        Assert.AreEqual(TimeSpan.FromMinutes(5), retry.Delay);
+        var reset = new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionReset);
+        Assert.AreEqual(TimeSpan.FromSeconds(1), ImapIdleListener.QuickRetryDelay(reset, 0));
+    }
+
+    [TestMethod]
+    public void UnexpectedImapDisconnectGetsTwoShortRetries()
+    {
+        var error = new MailKit.Net.Imap.ImapProtocolException("The IMAP server has unexpectedly disconnected.");
+        Assert.AreEqual(TimeSpan.FromSeconds(1), ImapIdleListener.QuickRetryDelay(error, 0));
+        Assert.AreEqual(TimeSpan.FromSeconds(3), ImapIdleListener.QuickRetryDelay(error, 1));
+        Assert.IsNull(ImapIdleListener.QuickRetryDelay(error, 2));
+        Assert.IsNull(ImapIdleListener.QuickRetryDelay(
+            new MailKit.Net.Imap.ImapProtocolException("Unexpected token"), 0));
+    }
+
+    [TestMethod]
+    public void CertificateAuthorizationAndTimeoutFailuresNeverUseShortRetries()
+    {
+        var certificate = new MailKit.Security.SslHandshakeException("Certificate rejected",
+            new System.Security.Authentication.AuthenticationException("RemoteCertificateValidationCallback rejected certificate",
+                new IOException("Transport error")));
+        Assert.IsNull(ImapIdleListener.QuickRetryDelay(certificate, 0));
+        Assert.IsNull(ImapIdleListener.QuickRetryDelay(new MailKit.Security.AuthenticationException("LOGIN rejected"), 0));
+        Assert.IsNull(ImapIdleListener.QuickRetryDelay(new UnauthorizedAccessException("Missing credential"), 0));
+        Assert.IsNull(ImapIdleListener.QuickRetryDelay(new TaskCanceledException("Timeout"), 0));
+        Assert.IsNull(ImapIdleListener.QuickRetryDelay(new InvalidOperationException("Local state error"), 0));
+    }
+
+    [TestMethod]
     public void DiagnosticFileKeepsRedactedServerReasonAndRotatesOnlyOldOwnedFiles()
     {
         var directory = Path.Combine(Path.GetTempPath(), $"OneBox-test-{Guid.NewGuid():N}");

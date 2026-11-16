@@ -22,12 +22,56 @@ public sealed class SyncFailureTests
     }
 
     [TestMethod]
+    public void UnexpectedImapDisconnectIsReportedAsConnectionInterruption()
+    {
+        var error = new MailKit.Net.Imap.ImapProtocolException("The IMAP server has unexpectedly disconnected.");
+        var failure = SyncFailure.Describe(error, ProviderKind.Qq, "申请IDLE");
+        Assert.AreEqual("邮箱服务器连接中断", failure.Summary);
+        Assert.IsFalse(failure.NeedsAuthorization);
+        StringAssert.Contains(failure.Advice, "重新连接");
+        StringAssert.Contains(failure.Details, error.Message);
+    }
+
+    [TestMethod]
     public void NetworkTimeoutSuggestsRetryWithoutRequestingAuthorization()
     {
         var failure = SyncFailure.Describe(new TaskCanceledException("The operation was canceled"), ProviderKind.NetEase, "读取收件箱");
         Assert.IsFalse(failure.NeedsAuthorization);
         Assert.AreEqual("同步请求超时", failure.Summary);
         StringAssert.Contains(failure.Advice, "重试");
+    }
+
+    [TestMethod]
+    public void TlsTransportInterruptionSuggestsProxyRecoveryWithoutBlamingCertificateOrAuthorization()
+    {
+        var error = new MailKit.Security.SslHandshakeException("An error occurred while attempting to establish an SSL or TLS connection.",
+            new IOException("Received an unexpected EOF or 0 bytes from the transport stream."));
+        var failure = SyncFailure.Describe(error, ProviderKind.GmailImap, "连接IMAP服务器及TLS握手");
+        Assert.AreEqual("TLS连接中断", failure.Summary);
+        Assert.IsFalse(failure.NeedsAuthorization);
+        StringAssert.Contains(failure.Advice, "代理节点");
+        StringAssert.Contains(failure.Details, "unexpected EOF");
+    }
+
+    [TestMethod]
+    public void CertificateValidationFailureKeepsRevocationReasonAndDoesNotRequestNewPassword()
+    {
+        var error = new MailKit.Security.SslHandshakeException("吊销服务器已脱机，吊销功能无法检查吊销。",
+            new System.Security.Authentication.AuthenticationException("The remote certificate was rejected by the provided RemoteCertificateValidationCallback."));
+        var failure = SyncFailure.Describe(error, ProviderKind.Qq, "连接IMAP服务器及TLS握手");
+        Assert.AreEqual("邮箱服务器证书验证失败", failure.Summary);
+        Assert.IsFalse(failure.NeedsAuthorization);
+        StringAssert.Contains(failure.Advice, "吊销检查服务");
+        StringAssert.Contains(failure.Details, "吊销服务器已脱机");
+    }
+
+    [TestMethod]
+    public void UnclassifiedTlsFailureDoesNotClaimTheCertificateWasRejected()
+    {
+        var failure = SyncFailure.Describe(new MailKit.Security.SslHandshakeException("TLS negotiation failed"),
+            ProviderKind.GmailImap, "连接IMAP服务器及TLS握手");
+        Assert.AreEqual("TLS握手失败", failure.Summary);
+        Assert.IsFalse(failure.NeedsAuthorization);
     }
 
     [TestMethod]

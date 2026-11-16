@@ -15,6 +15,7 @@ public partial class SettingsWindow : Window
 
     public ReaderSettings Settings { get; private set; }
     public event EventHandler? SettingsChanged;
+    public event EventHandler? TestNotificationRequested;
 
     public SettingsWindow(ReaderSettings settings, string settingsPath)
     {
@@ -34,6 +35,20 @@ public partial class SettingsWindow : Window
         ProxyAddressBox.Text = Settings.Proxy.Address;
         CustomProxyPanel.Visibility = Settings.Proxy.Mode == ProxyMode.Custom ? Visibility.Visible : Visibility.Collapsed;
         ProxyErrorText.Text = "";
+        NotificationsBox.IsChecked = Settings.Notifications.Enabled;
+        NotificationContentBox.IsChecked = Settings.Notifications.ShowContent;
+        NotificationCornerBox.SelectedIndex = (int)Settings.Notifications.Corner;
+        NotificationDurationBox.SelectedValue = Math.Clamp(Settings.Notifications.DurationSeconds, 2, 30).ToString();
+        NotificationCountBox.SelectedValue = Math.Clamp(Settings.Notifications.MaxVisible, 1, 5).ToString();
+        NotificationScreenBox.Items.Clear();
+        NotificationScreenBox.Items.Add(new ComboBoxItem { Content = "主显示器（默认）", Tag = "" });
+        foreach (var screen in Forms.Screen.AllScreens)
+            NotificationScreenBox.Items.Add(new ComboBoxItem
+            {
+                Content = $"{screen.DeviceName} · {screen.Bounds.Width}×{screen.Bounds.Height}", Tag = screen.DeviceName
+            });
+        NotificationScreenBox.SelectedValue = Settings.Notifications.ScreenDeviceName;
+        if (NotificationScreenBox.SelectedIndex < 0) NotificationScreenBox.SelectedIndex = 0;
         DownloadDirectoryLabel.Text = string.IsNullOrWhiteSpace(Settings.DownloadDirectory)
             ? "未设置，每次下载时选择" : Settings.DownloadDirectory;
         _updatingControls = false;
@@ -104,6 +119,28 @@ public partial class SettingsWindow : Window
 
     private void OnClearDownloadDirectory(object sender, RoutedEventArgs e) =>
         SaveSettings(Settings with { DownloadDirectory = "" });
+
+    private void OnNotificationChanged(object sender, RoutedEventArgs e)
+    {
+        if (_updatingControls || NotificationScreenBox is null || NotificationCountBox is null ||
+            NotificationDurationBox is null || NotificationCornerBox is null || NotificationContentBox is null) return;
+        if (!int.TryParse(NotificationDurationBox.SelectedValue as string, out var seconds) ||
+            !int.TryParse(NotificationCountBox.SelectedValue as string, out var count)) return;
+        SaveSettings(Settings with
+        {
+            Notifications = Settings.Notifications with
+            {
+                Enabled = NotificationsBox.IsChecked == true,
+                ShowContent = NotificationContentBox.IsChecked == true,
+                Corner = (NotificationCorner)NotificationCornerBox.SelectedIndex,
+                DurationSeconds = seconds,
+                MaxVisible = count,
+                ScreenDeviceName = NotificationScreenBox.SelectedValue as string ?? ""
+            }
+        });
+    }
+
+    private void OnTestNotification(object sender, RoutedEventArgs e) => TestNotificationRequested?.Invoke(this, EventArgs.Empty);
 
     private void OnClose(object sender, RoutedEventArgs e) => Close();
 }

@@ -10,6 +10,7 @@ namespace OneBox.App;
 public sealed record NoticeEntry(string Text, string Kind, DateTimeOffset RecordedAt, string Details)
 {
     public string TimeText => RecordedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss");
+    public bool HasDiagnosticDetails => Kind is "告警" or "失败" && !string.IsNullOrWhiteSpace(Details);
 }
 
 public sealed class MessageRow(MailMessage message, string accountLabel) : INotifyPropertyChanged

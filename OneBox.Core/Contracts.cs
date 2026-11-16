@@ -15,6 +15,8 @@ public interface IMailStore
     Task RemoveAccountAsync(Guid accountId, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<MailMessage>> GetMessagesAsync(Guid? accountId, string? folderId,
         string? query, int limit = 200, bool starredOnly = false, CancellationToken cancellationToken = default);
+    Task<int> GetUnreadCountAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlySet<string>> GetMessageIdSetAsync(Guid accountId, CancellationToken cancellationToken = default);
     Task UpsertMessagesAsync(IEnumerable<MailMessage> messages, CancellationToken cancellationToken = default);
     Task ResetFolderAsync(Guid accountId, string folderId, CancellationToken cancellationToken = default);
     Task RemoveMissingMessagesAsync(Guid accountId, string folderId, IReadOnlySet<string> serverIdSet,

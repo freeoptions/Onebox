@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net.Sockets;
 using MailKit;
 using MailKit.Net.Imap;
 using OneBox.Core;
@@ -16,9 +17,26 @@ public sealed class ImapIdleListener(Account account, ImapSmtpProvider provider,
         return (failures, failures <= 3 ? TimeSpan.FromMinutes(5) : TimeSpan.FromHours(5));
     }
 
-    public async Task RunAsync(Action onChanged, Action<InboxListenerLog> report, CancellationToken ct)
+    internal static TimeSpan? QuickRetryDelay(Exception error, int quickFailures)
+    {
+        if (quickFailures >= 2) return null;
+        var interrupted = false;
+        for (Exception? current = error; current is not null; current = current.InnerException)
+        {
+            if (current is MailKit.Security.AuthenticationException or UnauthorizedAccessException or
+                System.Security.Authentication.AuthenticationException or
+                MailKit.Security.SslHandshakeException { ServerCertificate: not null }) return null;
+            if (current is IOException || SyncFailure.IsUnexpectedDisconnect(current) || current is SocketException
+                { SocketErrorCode: SocketError.ConnectionReset or SocketError.ConnectionAborted or SocketError.NetworkReset })
+                interrupted = true;
+        }
+        return interrupted ? TimeSpan.FromSeconds(quickFailures == 0 ? 1 : 3) : null;
+    }
+
+    public async Task RunAsync(Action onChanged, Action onConnected, Action<InboxListenerLog> report, CancellationToken ct)
     {
         var failures = 0;
+        var quickFailures = 0;
         var label = junk ? "垃圾邮件" : "收件箱";
         while (!ct.IsCancellationRequested)
         {
@@ -93,6 +111,7 @@ public sealed class ImapIdleListener(Account account, ImapSmtpProvider provider,
                             {
                                 connectedClock = Stopwatch.StartNew();
                                 Log("实时监听已连接", "状态");
+                                onConnected();
                             }
                             else Log("IDLE续接已确认", "状态", showInHistory: false);
                         }
@@ -123,7 +142,20 @@ public sealed class ImapIdleListener(Account account, ImapSmtpProvider provider,
                     Log("实时监听需要更新授权", "告警", failure.Details);
                     return;
                 }
-                var retry = NextRetry(failures, connectedClock?.Elapsed ?? TimeSpan.Zero);
+                var connectedFor = connectedClock?.Elapsed ?? TimeSpan.Zero;
+                if (connectedFor >= TimeSpan.FromMinutes(9)) quickFailures = 0;
+                var quickDelay = QuickRetryDelay(error, quickFailures);
+                if (quickDelay is TimeSpan shortDelay)
+                {
+                    quickFailures++;
+                    Log($"监听中断：{failure.Summary}，{shortDelay.TotalSeconds:0}秒后快速重连（{quickFailures}/2）",
+                        "告警", $"下次重连：{DateTimeOffset.Now.Add(shortDelay):yyyy-MM-dd HH:mm:ss zzz}\n{failure.Details}");
+                    try { await Task.Delay(shortDelay, ct).ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+                    continue;
+                }
+                quickFailures = 0;
+                var retry = NextRetry(failures, connectedFor);
                 failures = retry.Failures;
                 var delay = retry.Delay;
                 Log($"监听中断：{failure.Summary}，{(failures <= 3 ? $"5分钟后重试（{failures}/3）" : "本轮3次重试已耗尽，5小时后重连")}",
