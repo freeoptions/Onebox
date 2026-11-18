@@ -221,12 +221,31 @@ public sealed class SettingsWindowTests
                     Assert.AreEqual(Visibility.Visible, copyButton.Visibility);
                     Assert.AreEqual("验证码 aB456c · 复制", copyButton.Content);
                     var readCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    var markReadStarted = false;
                     var copyCompletion = verificationWindow.CompleteVerificationCopyAsync(() =>
                     {
-                        Assert.IsTrue(verificationClosed, "验证码复制成功后，应在回写已读前立即关闭通知");
+                        Assert.IsTrue(verificationClosed, "通知应在回写已读前完成退场");
+                        markReadStarted = true;
                         return readCompletion.Task;
                     });
+                    if (SystemParameters.ClientAreaAnimation)
+                    {
+                        Assert.IsFalse(verificationClosed);
+                        Assert.IsFalse(markReadStarted);
+                        Assert.IsTrue(verificationWindow.HasAnimatedProperties, "复制成功后应立刻开始淡出");
+                        var fadeFrame = new DispatcherFrame();
+                        var fadeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(20) };
+                        var fadeDeadline = DateTime.UtcNow.AddSeconds(2);
+                        fadeTimer.Tick += (_, _) =>
+                        {
+                            if (markReadStarted || DateTime.UtcNow > fadeDeadline) fadeFrame.Continue = false;
+                        };
+                        fadeTimer.Start();
+                        try { Dispatcher.PushFrame(fadeFrame); }
+                        finally { fadeTimer.Stop(); }
+                    }
                     Assert.IsTrue(verificationClosed);
+                    Assert.IsTrue(markReadStarted);
                     Assert.IsFalse(copyCompletion.IsCompleted);
                     readCompletion.SetResult();
                 }

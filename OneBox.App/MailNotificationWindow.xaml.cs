@@ -11,9 +11,9 @@ namespace OneBox.App;
 public partial class MailNotificationWindow : Window
 {
     private readonly DispatcherTimer _timer = new();
+    private readonly TaskCompletionSource _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Action _open;
     private bool _dismissing;
-    private bool _closed;
     private bool _checkingVerificationCode;
     private string? _verificationCode;
     private Func<Task>? _markRead;
@@ -51,9 +51,9 @@ public partial class MailNotificationWindow : Window
         };
         Closed += (_, _) =>
         {
-            _closed = true;
             _dismissing = true;
             _timer.Stop();
+            _closed.TrySetResult();
         };
     }
 
@@ -105,20 +105,18 @@ public partial class MailNotificationWindow : Window
         await CompleteVerificationCopyAsync(markRead);
     }
 
-    internal Task CompleteVerificationCopyAsync(Func<Task> markRead)
+    internal async Task CompleteVerificationCopyAsync(Func<Task> markRead)
     {
-        if (!_closed)
-        {
-            BeginAnimation(OpacityProperty, null);
-            Close();
-        }
-        return markRead();
+        Dismiss();
+        await _closed.Task;
+        await markRead();
     }
 
     private void Dismiss(bool openMessage = false)
     {
         if (_dismissing) return;
         _dismissing = true;
+        IsHitTestVisible = false;
         _timer.Stop();
         if (!SystemParameters.ClientAreaAnimation)
         {
@@ -126,11 +124,11 @@ public partial class MailNotificationWindow : Window
         }
         else
         {
-            var animation = new DoubleAnimation(Opacity, 0, TimeSpan.FromMilliseconds(160))
+            var animation = new DoubleAnimation(Opacity, 0, TimeSpan.FromMilliseconds(240))
             {
-                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn }
+                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseInOut }
             };
-            animation.Completed += (_, _) => { if (!_closed) Close(); };
+            animation.Completed += (_, _) => { if (!_closed.Task.IsCompleted) Close(); };
             BeginAnimation(OpacityProperty, animation);
         }
         if (openMessage) _open();
