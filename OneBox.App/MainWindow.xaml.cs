@@ -236,7 +236,7 @@ public partial class MainWindow : Window
                 .Select(time => (DateTimeOffset?)time).Min();
             _viewModel.StatusText = _viewModel.Accounts.Count == 0 ? "尚未添加账号" :
                 nextSyncAt is null ? "已加载本地邮件，账号需要更新授权" :
-                nextSyncAt > now ? $"已加载本地邮件 · 下次自动同步：{nextSyncAt.Value.LocalDateTime:MM-dd HH:mm:ss}" :
+                nextSyncAt > now ? $"已加载本地邮件 · 下次定期补查：{nextSyncAt.Value.LocalDateTime:MM-dd HH:mm:ss}" :
                 "已加载本地邮件，准备同步";
             Notify(_viewModel.StatusText, _viewModel.Accounts.Any(account =>
                 account.Status is ConnectionStatus.Failed or ConnectionStatus.NeedsAuthorization) ? "告警" :
@@ -281,14 +281,15 @@ public partial class MainWindow : Window
     private void ReconcileInboxListeners()
     {
         var accountList = _viewModel.Accounts.Where(account =>
-            account.Provider is ProviderKind.Qq or ProviderKind.GmailImap && account.Status != ConnectionStatus.NeedsAuthorization).ToArray();
+            account.Provider is ProviderKind.Qq or ProviderKind.NetEase or ProviderKind.GmailImap or ProviderKind.Gmail &&
+            account.Status != ConnectionStatus.NeedsAuthorization).ToArray();
         var accountIdSet = accountList.Select(account => account.Id).ToHashSet();
         foreach (var key in _inboxListenerMap.Keys.Where(key => !accountIdSet.Contains(key.AccountId)).ToArray())
             StopInboxListener(key);
         foreach (var account in accountList)
         {
-            if (_providerMap[account.Provider] is not ImapSmtpProvider provider) continue;
-            foreach (var junk in new[] { false, true })
+            if (!_providerMap.TryGetValue(account.Provider, out var provider)) continue;
+            foreach (var junk in provider is GmailProvider ? new[] { false } : new[] { false, true })
             {
                 var key = (account.Id, junk);
                 if (_inboxListenerMap.TryGetValue(key, out var existing))
@@ -305,9 +306,14 @@ public partial class MainWindow : Window
                 }
                 var cancellation = new CancellationTokenSource();
                 var token = cancellation.Token;
-                var listener = new ImapIdleListener(account, provider, _vault, _store, junk);
+                Func<Action, Action, Action<InboxListenerLog>, CancellationToken, Task> runListener = provider switch
+                {
+                    GmailProvider gmail => new GmailInboxListener(account, gmail, _vault, _store).RunAsync,
+                    ImapSmtpProvider imap => new ImapIdleListener(account, imap, _vault, _store, junk).RunAsync,
+                    _ => throw new InvalidOperationException("不支持的自动收信方式")
+                };
                 var proxySettings = _readerSettings.Proxy;
-                var task = Task.Run(() => listener.RunAsync(
+                var task = Task.Run(() => runListener(
                     () => Dispatcher.BeginInvoke(new Action(async () =>
                     {
                         if (_exiting || token.IsCancellationRequested) return;
@@ -349,13 +355,13 @@ public partial class MainWindow : Window
         {
             if (_syncing || _exiting) return;
             var account = _viewModel.Accounts.FirstOrDefault(account => account.Id == id);
-            var recovered = _inboxRecoveryAccountSet.Remove(id);
+            _inboxRecoveryAccountSet.Remove(id);
             if (account is null) { _inboxChangeAccountSet.Remove(id); continue; }
             if (account.Status == ConnectionStatus.NeedsAuthorization) continue;
-            if (account.Status == ConnectionStatus.Failed && !recovered) continue;
+            // 监听已检测到新邮件时仍应尝试恢复，不能因上一次同步失败永久搁置变化。
             if (!_inboxChangeAccountSet.Contains(id) && account.Status != ConnectionStatus.Failed) continue;
             _inboxChangeAccountSet.Remove(id);
-            try { await SyncAllAsync(force: true, accountId: id); }
+            try { await SyncAllAsync(force: true, accountId: id, automatic: true); }
             finally
             {
                 // 同步期间两个文件夹可能先后确认重连，同一账号只补同步一次。
@@ -405,7 +411,7 @@ public partial class MainWindow : Window
         previousIcon?.Dispose();
     }
 
-    private async Task SyncAllAsync(bool force = false, Guid? accountId = null)
+    private async Task SyncAllAsync(bool force = false, Guid? accountId = null, bool automatic = false)
     {
         if (_syncing) return;
         var accountList = _viewModel.Accounts.Where(account =>
@@ -440,15 +446,18 @@ public partial class MainWindow : Window
                 var stage = "读取本机凭据";
                 try
                 {
+                    using var syncTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+                    var syncToken = syncTimeout.Token;
+                    if (automatic) _listenerLog.TryAppend("状态", $"{account.Address} · 自动收信开始同步", "变化已进入同步队列");
                     secret = _vault.Read(account.Id);
                     if (string.IsNullOrEmpty(secret))
                         throw new UnauthorizedAccessException("Windows凭据管理器中没有此账号的有效授权，请更新授权。");
                     stage = "回写已读和星标状态";
-                    await ProcessPendingAsync(account, provider, secret);
+                    await ProcessPendingAsync(account, provider, secret, syncToken);
                     stage = "读取收件箱";
                     var cursor = await _store.GetCursorAsync(account.Id, "INBOX");
                     var previousJunkCursor = await _store.GetCursorAsync(account.Id, "JUNK");
-                    var messageList = await provider.GetRecentInboxAsync(account, secret, cursor, DateTimeOffset.UtcNow.AddDays(-90), CancellationToken.None);
+                    var messageList = await provider.GetRecentInboxAsync(account, secret, cursor, DateTimeOffset.UtcNow.AddDays(-90), syncToken);
                     stage = "保存本地邮件";
                     var validity = (provider as ImapSmtpProvider)?.CurrentUidValidity;
                     var existingIdSet = await _store.GetMessageIdSetAsync(account.Id);
@@ -470,10 +479,13 @@ public partial class MainWindow : Window
                     await _store.UpsertAccountAsync(account with { Status = ConnectionStatus.Online, LastError = null });
                     _syncScheduleSettings.AccountMap[account.Id] = new SyncSchedule(DateTimeOffset.UtcNow);
                     _syncScheduleSettings.Save(_syncSchedulePath);
+                    if (automatic) _listenerLog.TryAppend("成功", $"{account.Address} · 自动收信已保存，准备刷新列表",
+                        $"同步邮件数：{messageList.Count}\n新邮件通知数：{notificationList.Count}");
                 }
                 catch (Exception error)
                 {
                     var failure = SyncFailure.Describe(error, account.Provider, stage, secret, _googleClientSecret);
+                    if (automatic) _listenerLog.TryAppend("告警", $"{account.Address} · 自动收信同步失败", failure.Details);
                     _syncScheduleSettings.AccountMap[account.Id] = schedule.Failed(DateTimeOffset.UtcNow, failure.NeedsAuthorization);
                     _syncScheduleSettings.Save(_syncSchedulePath);
                     await _store.UpsertAccountAsync(account with
@@ -814,16 +826,19 @@ public partial class MainWindow : Window
         catch { Notify("邮件状态已保存在本机，恢复连接后同步", "告警"); }
     }
 
-    private async Task ProcessPendingAsync(Account account, IMailProvider provider, string secret)
+    private async Task ProcessPendingAsync(Account account, IMailProvider provider, string secret, CancellationToken ct = default)
     {
-        await _pendingWriteLock.WaitAsync();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(60));
+        ct = timeout.Token;
+        await _pendingWriteLock.WaitAsync(ct);
         try
         {
-            var actionList = await _store.GetPendingAsync(account.Id);
+            var actionList = await _store.GetPendingAsync(account.Id, ct);
             if (provider is ImapSmtpProvider imap && actionList.Count > 0)
             {
                 await imap.ApplyPendingFlagsAsync(account, secret, actionList,
-                    actionId => _store.CompletePendingAsync(actionId), CancellationToken.None);
+                    actionId => _store.CompletePendingAsync(actionId, ct), ct);
                 return;
             }
             foreach (var action in actionList)
@@ -840,9 +855,9 @@ public partial class MainWindow : Window
                     PendingActionKind.Unstar => false,
                     _ => (bool?)null
                 };
-                try { await provider.SetFlagsAsync(account, secret, action.MessageServerId, read, starred, CancellationToken.None); }
+                try { await provider.SetFlagsAsync(account, secret, action.MessageServerId, read, starred, ct); }
                 catch (MailKit.MessageNotFoundException) { }
-                await _store.CompletePendingAsync(action.Id);
+                await _store.CompletePendingAsync(action.Id, ct);
             }
         }
         finally { _pendingWriteLock.Release(); }

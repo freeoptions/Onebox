@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Threading;
 using Microsoft.Win32;
@@ -20,6 +21,7 @@ public sealed class DesktopNotificationService : IDisposable
     private DesktopNotificationSettings _settings = new();
     private bool _disposed;
     private bool _clearing;
+    private bool _arrangeQueued;
 
     public DesktopNotificationService(Dispatcher dispatcher, Action<MailMessage> open,
         Func<Account, MailMessage, CancellationToken, Task<string?>> findCode, Func<MailMessage, Task> markRead)
@@ -83,8 +85,10 @@ public sealed class DesktopNotificationService : IDisposable
                 () => { if (!item.Preview) _open(item.Message); });
             window.Closed += (_, _) => { _activeList.RemoveAll(active => active.Window == window); Pump(); };
             _activeList.Add((window, item.Account, item.Message, item.Preview));
-            window.SourceInitialized += (_, _) => Arrange();
-            window.SizeChanged += (_, _) => Arrange();
+            window.SourceInitialized += (_, _) => RequestArrange();
+            window.SizeChanged += (_, _) => RequestArrange();
+            window.ContentRendered += (_, _) => RequestArrange();
+            window.DpiChanged += (_, _) => RequestArrange();
             var checkCode = !item.Preview && _settings.ShowContent;
             var waitForCode = checkCode && MailVerificationCode.IsLikelyVerificationMail(item.Message);
             if (waitForCode) window.BeginVerificationCheck();
@@ -127,13 +131,28 @@ public sealed class DesktopNotificationService : IDisposable
         {
             var window = item.Window;
             var handle = new WindowInteropHelper(window).Handle;
+            if (handle == IntPtr.Zero || window.ActualWidth <= 0 || window.ActualHeight <= 0) continue;
             GetWindowRect(handle, out var bounds);
-            var width = bounds.Right - bounds.Left;
-            var height = bounds.Bottom - bounds.Top;
+            // SizeToContent增高时，原生窗口矩形可能尚未更新；按完成布局后的WPF尺寸定位。
+            var transform = PresentationSource.FromVisual(window)?.CompositionTarget?.TransformToDevice;
+            var width = transform is { } matrix ? (int)Math.Ceiling(window.ActualWidth * matrix.M11) : bounds.Right - bounds.Left;
+            var height = transform is { } heightMatrix ? (int)Math.Ceiling(window.ActualHeight * heightMatrix.M22) : bounds.Bottom - bounds.Top;
             SetWindowPos(handle, new IntPtr(-1), left ? area.Left + 12 : area.Right - width - 12,
                 top ? area.Top + offset : area.Bottom - height - offset, 0, 0, 0x0010 | 0x0001);
             offset += height + 8;
         }
+    }
+
+    private void RequestArrange()
+    {
+        if (_disposed || _arrangeQueued) return;
+        _arrangeQueued = true;
+        // 等SizeToContent和HWND尺寸更新完成，真实通知与测试通知复用相同的工作区边距。
+        _dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+        {
+            _arrangeQueued = false;
+            if (!_disposed) Arrange();
+        }));
     }
 
     private void OnDisplaySettingsChanged(object? sender, EventArgs e) =>

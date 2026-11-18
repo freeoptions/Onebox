@@ -14,6 +14,7 @@ public partial class MailNotificationWindow : Window
     private readonly TaskCompletionSource _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Action _open;
     private bool _dismissing;
+    private bool _autoFading;
     private bool _checkingVerificationCode;
     private string? _verificationCode;
     private Func<Task>? _markRead;
@@ -30,8 +31,17 @@ public partial class MailNotificationWindow : Window
         OpenButton.SetValue(System.Windows.Automation.AutomationProperties.NameProperty,
             $"{AccountText.Text}，{SenderText.Text}，{SubjectText.Text}");
         _timer.Interval = TimeSpan.FromSeconds(Math.Clamp(settings.DurationSeconds, 2, 30));
-        _timer.Tick += (_, _) => Dismiss();
-        MouseEnter += (_, _) => _timer.Stop();
+        _timer.Tick += (_, _) => Dismiss(automatic: true);
+        MouseEnter += (_, _) =>
+        {
+            _timer.Stop();
+            if (!_autoFading) return;
+            var opacity = Opacity;
+            BeginAnimation(OpacityProperty, null);
+            _autoFading = false;
+            _dismissing = false;
+            BeginAnimation(OpacityProperty, new DoubleAnimation(opacity, 1, TimeSpan.FromMilliseconds(120)));
+        };
         MouseLeave += (_, _) => StartDismissTimer();
         SourceInitialized += (_, _) =>
         {
@@ -112,21 +122,25 @@ public partial class MailNotificationWindow : Window
         await markRead();
     }
 
-    private void Dismiss(bool openMessage = false)
+    private void Dismiss(bool openMessage = false, bool automatic = false)
     {
-        if (_dismissing) return;
+        if (_dismissing && (!_autoFading || automatic)) return;
         _dismissing = true;
-        IsHitTestVisible = false;
+        _autoFading = automatic;
+        // 慢淡出期间仍可悬停恢复和点击，主动关闭时立即停止交互。
+        IsHitTestVisible = automatic;
         _timer.Stop();
-        if (!SystemParameters.ClientAreaAnimation)
+        if (!automatic || !SystemParameters.ClientAreaAnimation)
         {
+            BeginAnimation(OpacityProperty, null);
             Close();
         }
         else
         {
-            var animation = new DoubleAnimation(Opacity, 0, TimeSpan.FromMilliseconds(240))
+            var animation = new DoubleAnimation(Opacity, 0, TimeSpan.FromMilliseconds(4000))
             {
-                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseInOut }
+                // 参考视频约4秒：前段缓慢透出背景，后段逐渐加快，卡片保持原位。
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
             };
             animation.Completed += (_, _) => { if (!_closed.Task.IsCompleted) Close(); };
             BeginAnimation(OpacityProperty, animation);

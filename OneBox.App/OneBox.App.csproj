@@ -5,6 +5,8 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- WPF通过manifest在创建窗口前启用DPI感知；WinForms仅提供托盘等辅助API，不使用其启动入口。 -->
+    <NoWarn>$(NoWarn);WFAC010</NoWarn>
     <ApplicationIcon>Assets\onebox.ico</ApplicationIcon>
     <EnableCompressionInSingleFile Condition="'$(Configuration)' == 'Release' and '$(PublishSingleFile)' == 'true'">true</EnableCompressionInSingleFile>
   </PropertyGroup>

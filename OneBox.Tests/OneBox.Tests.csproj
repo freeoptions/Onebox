@@ -14,5 +14,6 @@
     <None Include="..\OneBox.App\MainWindow.xaml" Link="Ui\MainWindow.xaml" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\OneBox.App\AccountDialog.xaml" Link="Ui\AccountDialog.xaml" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\OneBox.App\ComposeDialog.xaml" Link="Ui\ComposeDialog.xaml" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\OneBox.App\MailNotificationWindow.xaml" Link="Ui\MailNotificationWindow.xaml" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

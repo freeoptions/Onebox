@@ -69,12 +69,43 @@
       <sys:Double x:Key="BodyLineHeight">26</sys:Double>
       <sys:Double x:Key="HelpLineHeight">22</sys:Double>
       <Style x:Key="AppWindow" TargetType="Window">
-        <Setter Property="FontFamily" Value="Segoe UI Variable Text, Microsoft YaHei UI"/>
+        <Setter Property="FontFamily" Value="Segoe UI, Microsoft YaHei UI"/>
         <Setter Property="FontSize" Value="{DynamicResource FontSize13}"/>
         <Setter Property="Foreground" Value="{StaticResource InkBrush}"/>
         <Setter Property="Background" Value="{StaticResource SurfaceBrush}"/>
         <Setter Property="UseLayoutRounding" Value="True"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
         <Setter Property="TextOptions.TextFormattingMode" Value="Display"/>
+        <Setter Property="TextOptions.TextRenderingMode" Value="ClearType"/>
+      </Style>
+      <Style x:Key="PopupTextRendering" TargetType="FrameworkElement">
+        <Setter Property="UseLayoutRounding" Value="True"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+        <Setter Property="TextOptions.TextFormattingMode" Value="Display"/>
+        <Setter Property="TextOptions.TextRenderingMode" Value="ClearType"/>
+        <Setter Property="RenderOptions.ClearTypeHint" Value="Enabled"/>
+      </Style>
+      <Style TargetType="ContextMenu">
+        <Setter Property="FontFamily" Value="Segoe UI, Microsoft YaHei UI"/>
+        <Setter Property="FontSize" Value="{DynamicResource FontSize13}"/>
+        <Setter Property="Background" Value="{StaticResource SurfaceBrush}"/>
+        <Setter Property="Foreground" Value="{StaticResource InkBrush}"/>
+        <Setter Property="UseLayoutRounding" Value="True"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+        <Setter Property="TextOptions.TextFormattingMode" Value="Display"/>
+        <Setter Property="TextOptions.TextRenderingMode" Value="ClearType"/>
+        <Setter Property="RenderOptions.ClearTypeHint" Value="Enabled"/>
+      </Style>
+      <Style TargetType="ToolTip">
+        <Setter Property="FontFamily" Value="Segoe UI, Microsoft YaHei UI"/>
+        <Setter Property="FontSize" Value="{DynamicResource FontSize13}"/>
+        <Setter Property="Background" Value="{StaticResource SurfaceBrush}"/>
+        <Setter Property="Foreground" Value="{StaticResource InkBrush}"/>
+        <Setter Property="UseLayoutRounding" Value="True"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+        <Setter Property="TextOptions.TextFormattingMode" Value="Display"/>
+        <Setter Property="TextOptions.TextRenderingMode" Value="ClearType"/>
+        <Setter Property="RenderOptions.ClearTypeHint" Value="Enabled"/>
       </Style>
       <Style x:Key="Icon" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>

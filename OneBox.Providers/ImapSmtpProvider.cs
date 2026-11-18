@@ -49,16 +49,7 @@ public sealed class ImapSmtpProvider(ProviderKind kind, MailProxy? proxy = null)
             onBodyStage?.Invoke("imap_authenticate");
             onStage?.Invoke("IMAP登录认证");
             await client.AuthenticateAsync(account.Address, secret, ct);
-            if (Kind == ProviderKind.NetEase && client.Capabilities.HasFlag(ImapCapabilities.Id))
-            {
-                await client.IdentifyAsync(new ImapImplementation
-                {
-                    Name = "OneBox",
-                    Version = typeof(ImapSmtpProvider).Assembly.GetName().Version?.ToString(),
-                    Vendor = "OneBox",
-                    SupportUrl = "https://github.com/freeoptions/Onebox"
-                }, ct);
-            }
+            await IdentifyClientAsync(client, ct);
             return client;
         }
         catch
@@ -66,6 +57,19 @@ public sealed class ImapSmtpProvider(ProviderKind kind, MailProxy? proxy = null)
             client.Dispose();
             throw;
         }
+    }
+
+    internal async Task IdentifyClientAsync(ImapClient client, CancellationToken ct)
+    {
+        // 网易要求认证后、打开文件夹前发送ID，监听和普通同步均走同一连接初始化流程。
+        if (Kind != ProviderKind.NetEase || !client.Capabilities.HasFlag(ImapCapabilities.Id)) return;
+        await client.IdentifyAsync(new ImapImplementation
+        {
+            Name = "OneBox",
+            Version = typeof(ImapSmtpProvider).Assembly.GetName().Version?.ToString(),
+            Vendor = "OneBox",
+            SupportUrl = "https://github.com/freeoptions/Onebox"
+        }, ct);
     }
 
     private async Task<SmtpClient> OpenSmtpAsync(Account account, string secret, CancellationToken ct)

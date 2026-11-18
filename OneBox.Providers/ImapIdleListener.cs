@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net.Sockets;
 using MailKit;
 using MailKit.Net.Imap;
+using MailKit.Search;
 using OneBox.Core;
 using IMailStore = OneBox.Core.IMailStore;
 
@@ -11,10 +12,68 @@ public sealed record InboxListenerLog(string Text, string Kind, string Details, 
 
 public sealed class ImapIdleListener(Account account, ImapSmtpProvider provider, ICredentialVault vault, IMailStore store, bool junk)
 {
+    internal static async Task<bool> HasNewMessagesAsync(IMailFolder folder, SyncCursor? cursor, CancellationToken ct)
+    {
+        if (cursor is null || cursor.UidValidity != folder.UidValidity) return true;
+        var highestUid = cursor.HighestUid ?? 0;
+        if (highestUid >= uint.MaxValue) return false;
+        var range = new UniqueIdRange(new UniqueId((uint)Math.Max(1, highestUid + 1)), UniqueId.MaxValue);
+        var uidList = await folder.SearchAsync(SearchQuery.Uids(range), ct).ConfigureAwait(false);
+        // IMAP的n:*在n大于当前最大UID时也可能返回最后一封，必须再比较UID。
+        return uidList.Any(uid => uid.Id > highestUid);
+    }
+
+    internal static async Task<bool> WaitForChangesAsync(ImapClient client, IMailFolder folder,
+        Func<CancellationToken, Task<SyncCursor?>> readCursor, Action onIdleReady, CancellationToken ct,
+        TimeSpan? checkInterval = null)
+    {
+        var interval = checkInterval ?? TimeSpan.FromSeconds(30);
+        if (!client.Capabilities.HasFlag(ImapCapabilities.Idle))
+        {
+            onIdleReady();
+            await Task.Delay(interval, ct).ConfigureAwait(false);
+            using var pollTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            pollTimeout.CancelAfter(TimeSpan.FromSeconds(15));
+            await client.NoOpAsync(pollTimeout.Token).ConfigureAwait(false);
+            return await HasNewMessagesAsync(folder, await readCursor(pollTimeout.Token).ConfigureAwait(false),
+                pollTimeout.Token).ConfigureAwait(false);
+        }
+        using var done = new CancellationTokenSource(interval);
+        using var ioCancellation = new CancellationTokenSource();
+        ioCancellation.CancelAfter((checkInterval ?? TimeSpan.FromSeconds(30)) + TimeSpan.FromSeconds(15));
+        var changed = false;
+        void OnCountChanged(object? sender, EventArgs e) { changed = true; done.Cancel(); }
+        folder.CountChanged += OnCountChanged;
+        // TLS必须先退出IDLE，再取消会话读写，不能直接取消正在读取的SslStream。
+        using var cancelIdle = ct.Register(() =>
+        {
+            done.Cancel();
+            ioCancellation.CancelAfter(TimeSpan.FromSeconds(5));
+        });
+        try
+        {
+            var idleTask = client.IdleAsync(done.Token, ioCancellation.Token);
+            while (!idleTask.IsCompleted && !client.IsIdle)
+                await Task.WhenAny(idleTask, Task.Delay(50, ioCancellation.Token)).ConfigureAwait(false);
+            if (client.IsIdle) onIdleReady();
+            await idleTask.ConfigureAwait(false);
+        }
+        finally { folder.CountChanged -= OnCountChanged; }
+        ct.ThrowIfCancellationRequested();
+        if (changed) return true;
+
+        // 连接成功不代表服务器一定推送EXISTS；在同一连接上主动查询新增UID兜底。
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(15));
+        await client.NoOpAsync(timeout.Token).ConfigureAwait(false);
+        var cursor = await readCursor(timeout.Token).ConfigureAwait(false);
+        return await HasNewMessagesAsync(folder, cursor, timeout.Token).ConfigureAwait(false);
+    }
+
     internal static (int Failures, TimeSpan Delay) NextRetry(int failures, TimeSpan connectedFor)
     {
         failures = connectedFor >= TimeSpan.FromMinutes(9) ? 1 : failures + 1;
-        return (failures, failures <= 3 ? TimeSpan.FromMinutes(5) : TimeSpan.FromHours(5));
+        return (failures, TimeSpan.FromSeconds(failures switch { 1 => 5, 2 => 15, 3 => 30, _ => 60 }));
     }
 
     internal static TimeSpan? QuickRetryDelay(Exception error, int quickFailures)
@@ -48,7 +107,7 @@ public sealed class ImapIdleListener(Account account, ImapSmtpProvider provider,
             string connectionInfo = "";
             void Log(string text, string kind, string details = "", bool showInHistory = true) => report(new InboxListenerLog(
                 $"{account.Address} · {label}{text}", kind,
-                $"会话：{session}\n账号：{account.Address}\n文件夹类型：{label}\n阶段：{stage}\n本次连接耗时：{attemptClock.Elapsed.TotalSeconds:F1}秒\nIDLE已确认连接时长：{connectedClock?.Elapsed.TotalSeconds ?? 0:F1}秒\n连续失败次数：{failures}\n{connectionInfo}\n{details}".Trim(),
+                $"会话：{session}\n账号：{account.Address}\n文件夹类型：{label}\n阶段：{stage}\n本次连接耗时：{attemptClock.Elapsed.TotalSeconds:F1}秒\n自动收信已确认连接时长：{connectedClock?.Elapsed.TotalSeconds ?? 0:F1}秒\n连续失败次数：{failures}\n{connectionInfo}\n{details}".Trim(),
                 showInHistory));
             try
             {
@@ -66,8 +125,10 @@ public sealed class ImapIdleListener(Account account, ImapSmtpProvider provider,
                 }).ConfigureAwait(false);
                 stage = "检查IDLE能力";
                 connectionInfo += $"\nTLS：{client.SslProtocol}\n读取超时：{client.Timeout}毫秒\n服务器能力：{client.Capabilities}";
-                if (!client.Capabilities.HasFlag(ImapCapabilities.Idle))
-                    throw new NotSupportedException("服务器未提供IDLE能力");
+                var supportsIdle = client.Capabilities.HasFlag(ImapCapabilities.Idle);
+                // 无IDLE的网易账号复用已登录连接，每分钟检查一次，避免频繁登录。
+                var checkInterval = TimeSpan.FromSeconds(account.Provider == ProviderKind.NetEase && !supportsIdle ? 60 : 30);
+                var seconds = checkInterval.TotalSeconds;
                 stage = "查找监听文件夹";
                 var folder = junk ? await ImapSmtpProvider.FindJunkFolderAsync(client, connecting.Token).ConfigureAwait(false) : client.Inbox;
                 if (folder is null)
@@ -80,47 +141,33 @@ public sealed class ImapIdleListener(Account account, ImapSmtpProvider provider,
                 connectionInfo += $"\n实际文件夹：{folder.FullName}\nUIDVALIDITY：{folder.UidValidity}\nUIDNEXT：{folder.UidNext}";
                 stage = "检查断线期间的邮件变化";
                 var cursor = await store.GetCursorAsync(account.Id, junk ? "JUNK" : "INBOX", ct).ConfigureAwait(false);
-                if (cursor is null || cursor.UidValidity != folder.UidValidity ||
-                    folder.UidNext is UniqueId next && next.Id > (cursor.HighestUid ?? 0) + 1)
+                if (await HasNewMessagesAsync(folder, cursor, connecting.Token).ConfigureAwait(false))
                     onChanged();
-                Log("已打开文件夹，正在申请实时监听", "状态");
+                Log(supportsIdle ? "已打开文件夹，正在申请实时监听" : $"服务器不支持IDLE，改用{seconds:0}秒主动检查", "状态");
+                var healthClock = Stopwatch.StartNew();
                 while (!ct.IsCancellationRequested)
                 {
-                    stage = "申请IDLE";
-                    using var done = new CancellationTokenSource(TimeSpan.FromMinutes(9));
-                    using var ioCancellation = new CancellationTokenSource();
-                    var changed = false;
-                    void OnCountChanged(object? sender, EventArgs e) { changed = true; done.Cancel(); }
-                    folder.CountChanged += OnCountChanged;
-                    // TLS连接必须先结束IDLE，再取消会话读写。
-                    using var cancelIdle = ct.Register(() =>
+                    stage = supportsIdle ? $"实时监听及{seconds:0}秒新邮件补查" : $"{seconds:0}秒自动收信检查";
+                    var changed = await WaitForChangesAsync(client, folder,
+                        token => store.GetCursorAsync(account.Id, junk ? "JUNK" : "INBOX", token), () =>
                     {
-                        done.Cancel();
-                        ioCancellation.CancelAfter(TimeSpan.FromSeconds(5));
-                    });
-                    try
-                    {
-                        var idleTask = client.IdleAsync(done.Token, ioCancellation.Token);
-                        // IsIdle由MailKit在收到服务器的IDLE继续响应后设置，不能只根据登录成功推断。
-                        while (!idleTask.IsCompleted && !client.IsIdle && !ioCancellation.IsCancellationRequested)
-                            await Task.WhenAny(idleTask, Task.Delay(100)).ConfigureAwait(false);
-                        if (client.IsIdle)
+                        if (connectedClock is null)
                         {
-                            stage = "等待IDLE通知";
-                            if (connectedClock is null)
-                            {
-                                connectedClock = Stopwatch.StartNew();
-                                Log("实时监听已连接", "状态");
-                                onConnected();
-                            }
-                            else Log("IDLE续接已确认", "状态", showInHistory: false);
+                            connectedClock = Stopwatch.StartNew();
+                            Log(supportsIdle ? $"实时监听已连接（{seconds:0}秒主动补查兜底）" : $"自动收信已连接（每{seconds:0}秒检查）", "状态");
+                            onConnected();
                         }
-                        await idleTask.ConfigureAwait(false);
+                    }, ct, checkInterval).ConfigureAwait(false);
+                    if (changed)
+                    {
+                        Log("检测到文件夹变化或新增UID，触发自动同步", "状态", showInHistory: false);
+                        onChanged();
                     }
-                    finally { folder.CountChanged -= OnCountChanged; }
-                    if (ct.IsCancellationRequested) break;
-                    Log(changed ? "收到文件夹变化通知，触发同步" : "IDLE本轮结束，准备续接", "状态", showInHistory: false);
-                    if (changed) onChanged();
+                    else if (healthClock.Elapsed >= TimeSpan.FromMinutes(9))
+                    {
+                        Log(supportsIdle ? "实时监听及主动补查正常" : "自动收信检查正常", "状态", showInHistory: false);
+                        healthClock.Restart();
+                    }
                 }
                 Log("监听已主动停止", "状态", showInHistory: false);
             }
@@ -132,11 +179,6 @@ public sealed class ImapIdleListener(Account account, ImapSmtpProvider provider,
             catch (Exception error)
             {
                 var failure = SyncFailure.Describe(error, account.Provider, stage, secret);
-                if (error is NotSupportedException && stage == "检查IDLE能力")
-                {
-                    Log("不支持实时监听，仍可手动同步和5小时补查", "告警", failure.Details);
-                    return;
-                }
                 if (failure.NeedsAuthorization)
                 {
                     Log("实时监听需要更新授权", "告警", failure.Details);
@@ -158,11 +200,10 @@ public sealed class ImapIdleListener(Account account, ImapSmtpProvider provider,
                 var retry = NextRetry(failures, connectedFor);
                 failures = retry.Failures;
                 var delay = retry.Delay;
-                Log($"监听中断：{failure.Summary}，{(failures <= 3 ? $"5分钟后重试（{failures}/3）" : "本轮3次重试已耗尽，5小时后重连")}",
+                Log($"监听中断：{failure.Summary}，{delay.TotalSeconds:0}秒后重连（连续{failures}次）",
                     "告警", $"下次重连：{DateTimeOffset.Now.Add(delay):yyyy-MM-dd HH:mm:ss zzz}\n{failure.Details}");
                 try { await Task.Delay(delay, ct).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
-                if (failures > 3) failures = 0;
             }
         }
     }

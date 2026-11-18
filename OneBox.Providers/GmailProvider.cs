@@ -11,12 +11,13 @@ using OneBox.Core;
 
 namespace OneBox.Providers;
 
-public sealed class GmailProvider(string clientId, string clientSecret, ICredentialVault vault, MailProxy? proxy = null) : IMailProvider
+public sealed class GmailProvider(string clientId, string clientSecret, ICredentialVault vault, MailProxy? proxy = null,
+    HttpMessageHandler? httpHandler = null) : IMailProvider
 {
     static GmailProvider() => MailEncoding.Initialize();
     private const string Api = "https://gmail.googleapis.com/gmail/v1/users/me";
     private const string Scope = "https://www.googleapis.com/auth/gmail.modify";
-    private readonly HttpClient _http = new(new HttpClientHandler { Proxy = proxy ?? new MailProxy() });
+    private readonly HttpClient _http = new(httpHandler ?? new HttpClientHandler { Proxy = proxy ?? new MailProxy() });
     private sealed class AuthorizationSession
     {
         public SemaphoreSlim Gate { get; } = new(1, 1);
@@ -29,6 +30,13 @@ public sealed class GmailProvider(string clientId, string clientSecret, ICredent
     private volatile AuthorizationToken? _newAuthorization;
     public ProviderKind Kind => ProviderKind.Gmail;
     public string? LatestHistoryId { get; private set; }
+
+    public async Task<bool> HasInboxChangesAsync(Account account, string secret, SyncCursor? cursor, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(cursor?.GmailHistoryId)) return true;
+        using var profile = await GetAsync($"{Api}/profile", secret, ct, account.Id);
+        return profile.RootElement.GetProperty("historyId").GetString() != cursor.GmailHistoryId;
+    }
 
     public async Task<(string Email, string RefreshToken)> AuthorizeAsync(CancellationToken ct)
     {
@@ -108,6 +116,9 @@ public sealed class GmailProvider(string clientId, string clientSecret, ICredent
     public async Task<IReadOnlyList<MailMessage>> GetRecentInboxAsync(Account account, string secret,
         SyncCursor? cursor, DateTimeOffset since, CancellationToken ct)
     {
+        // 在读取邮件前取基线，不能在读取后把同步期间刚到达的邮件也跳过去。
+        using var profile = await GetAsync($"{Api}/profile", secret, ct, account.Id);
+        var latestHistoryId = profile.RootElement.GetProperty("historyId").GetString();
         var idSet = new HashSet<string>(StringComparer.Ordinal);
         var incrementalValid = false;
         if (!string.IsNullOrWhiteSpace(cursor?.GmailHistoryId))
@@ -127,7 +138,7 @@ public sealed class GmailProvider(string clientId, string clientSecret, ICredent
                                 foreach (var item in messages.EnumerateArray())
                                     if (item.TryGetProperty("id", out var id)) idSet.Add(id.GetString()!);
                         }
-                    LatestHistoryId = history.RootElement.TryGetProperty("historyId", out var historyId)
+                    latestHistoryId = history.RootElement.TryGetProperty("historyId", out var historyId)
                         ? historyId.GetString() : cursor.GmailHistoryId;
                     page = history.RootElement.TryGetProperty("nextPageToken", out var next) ? next.GetString() : null;
                 } while (page is not null);
@@ -136,6 +147,7 @@ public sealed class GmailProvider(string clientId, string clientSecret, ICredent
             catch (GmailCursorExpiredException)
             {
                 idSet.Clear();
+                latestHistoryId = profile.RootElement.GetProperty("historyId").GetString();
             }
         }
         if (!incrementalValid)
@@ -167,8 +179,6 @@ public sealed class GmailProvider(string clientId, string clientSecret, ICredent
                 page = list.RootElement.TryGetProperty("nextPageToken", out var next) ? next.GetString() : null;
             } while (page is not null);
         }
-        using var profile = await GetAsync($"{Api}/profile", secret, ct, account.Id);
-        LatestHistoryId = profile.RootElement.GetProperty("historyId").GetString();
         var messageList = new List<MailMessage>();
         foreach (var id in idSet)
         {
@@ -189,6 +199,7 @@ public sealed class GmailProvider(string clientId, string clientSecret, ICredent
                 !labelSet.Contains("UNREAD"), labelSet.Contains("STARRED"), false));
             }
         }
+        LatestHistoryId = latestHistoryId;
         return messageList;
     }
 

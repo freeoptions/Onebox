@@ -79,9 +79,10 @@
             <Popup x:Name="NoticeHistoryPopup" PlacementTarget="{Binding ElementName=NoticePanel}" Placement="Bottom" HorizontalOffset="-70"
                    AllowsTransparency="True" StaysOpen="True" VerticalOffset="6">
               <Border x:Name="NoticeHistoryContent" Width="{Binding ActualWidth, ElementName=NoticePanel}" MinWidth="360" MaxWidth="600"
+                      Style="{StaticResource PopupTextRendering}"
                       Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
                       CornerRadius="{StaticResource PanelRadius}" MouseEnter="OnNoticeHistoryMouseEnter" MouseLeave="OnNoticeHistoryMouseLeave"
-                      TextElement.FontFamily="Segoe UI Variable Text, Microsoft YaHei UI" TextElement.FontSize="{DynamicResource FontSize13}">
+                      TextElement.FontFamily="Segoe UI, Microsoft YaHei UI" TextElement.FontSize="{DynamicResource FontSize13}">
                 <StackPanel>
                   <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="16,12">
                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -97,7 +98,8 @@
                   <ScrollViewer MaxHeight="420" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <ItemsControl ItemsSource="{Binding RecentNoticeList}">
                       <ItemsControl.ItemTemplate><DataTemplate>
-                        <Border MinHeight="42" Padding="16,11" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1">
+                        <Border MinHeight="42" Padding="16,11" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1"
+                                RenderOptions.ClearTypeHint="Enabled">
                           <Border.Style><Style TargetType="Border"><Setter Property="Background" Value="{StaticResource SelectedBrush}"/>
                             <Style.Triggers>
                               <DataTrigger Binding="{Binding Kind}" Value="成功"><Setter Property="Background" Value="#EAF5EF"/></DataTrigger>

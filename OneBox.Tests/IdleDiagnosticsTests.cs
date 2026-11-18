@@ -11,7 +11,7 @@ namespace OneBox.Tests;
 public sealed class IdleDiagnosticsTests
 {
     [TestMethod]
-    public void RepeatedThreeMinuteDisconnectsExhaustThreeRetries()
+    public void RepeatedDisconnectsKeepRetryingWithinOneMinute()
     {
         var failures = 0;
         for (var attempt = 1; attempt <= 4; attempt++)
@@ -19,12 +19,13 @@ public sealed class IdleDiagnosticsTests
             // 每次登录成功后仅监听3分钟，不能把连续失败次数重置为1。
             var retry = ImapIdleListener.NextRetry(failures, TimeSpan.FromMinutes(3));
             Assert.AreEqual(attempt, retry.Failures);
-            Assert.AreEqual(attempt <= 3 ? TimeSpan.FromMinutes(5) : TimeSpan.FromHours(5), retry.Delay);
+            Assert.AreEqual(TimeSpan.FromSeconds(new[] { 5, 15, 30, 60 }[attempt - 1]), retry.Delay);
             failures = retry.Failures;
         }
         var recovered = ImapIdleListener.NextRetry(failures, TimeSpan.FromMinutes(9));
         Assert.AreEqual(1, recovered.Failures);
-        Assert.AreEqual(TimeSpan.FromMinutes(5), recovered.Delay);
+        Assert.AreEqual(TimeSpan.FromSeconds(5), recovered.Delay);
+        Assert.AreEqual(TimeSpan.FromSeconds(60), ImapIdleListener.NextRetry(20, TimeSpan.Zero).Delay);
     }
 
     [TestMethod]
@@ -32,10 +33,10 @@ public sealed class IdleDiagnosticsTests
     {
         var retry = ImapIdleListener.NextRetry(2, TimeSpan.Zero);
         Assert.AreEqual(3, retry.Failures);
-        Assert.AreEqual(TimeSpan.FromMinutes(5), retry.Delay);
+        Assert.AreEqual(TimeSpan.FromSeconds(30), retry.Delay);
         retry = ImapIdleListener.NextRetry(retry.Failures, TimeSpan.FromMinutes(9).Subtract(TimeSpan.FromMilliseconds(1)));
         Assert.AreEqual(4, retry.Failures);
-        Assert.AreEqual(TimeSpan.FromHours(5), retry.Delay);
+        Assert.AreEqual(TimeSpan.FromSeconds(60), retry.Delay);
     }
 
     [TestMethod]
@@ -48,7 +49,7 @@ public sealed class IdleDiagnosticsTests
         Assert.IsNull(ImapIdleListener.QuickRetryDelay(eof, 2));
         var retry = ImapIdleListener.NextRetry(0, TimeSpan.Zero);
         Assert.AreEqual(1, retry.Failures);
-        Assert.AreEqual(TimeSpan.FromMinutes(5), retry.Delay);
+        Assert.AreEqual(TimeSpan.FromSeconds(5), retry.Delay);
         var reset = new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionReset);
         Assert.AreEqual(TimeSpan.FromSeconds(1), ImapIdleListener.QuickRetryDelay(reset, 0));
     }

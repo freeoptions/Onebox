@@ -126,8 +126,13 @@ public sealed class SettingsWindowTests
                 foreach (var showContent in new[] { true, false })
                 {
                     var openCount = 0;
+                    var closed = false;
                     var notificationWindow = new MailNotificationWindow(notificationAccount, notificationMessage,
-                        notificationSettings with { ShowContent = showContent }, () => openCount++);
+                        notificationSettings with { ShowContent = showContent }, () =>
+                        {
+                            Assert.IsTrue(closed, "打开邮件前应已经移除通知");
+                            openCount++;
+                        });
                     try
                     {
                         Assert.AreEqual(SizeToContent.Height, notificationWindow.SizeToContent, "通知高度应随内容收紧");
@@ -155,38 +160,53 @@ public sealed class SettingsWindowTests
                             Assert.AreEqual(Visibility.Collapsed, previewText.Visibility, "没有摘要时应收起整行和间距");
                         }
                         Assert.AreEqual(0, openCount);
-                        var closed = false;
                         notificationWindow.Closed += (_, _) => closed = true;
                         var dismissButton = (Button)notificationWindow.FindName(showContent ? "DismissButton" : "OpenButton");
                         dismissButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                         dismissButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                         Assert.AreEqual(showContent ? 0 : 1, openCount, "重复点击不能重复打开邮件");
-                        if (!SystemParameters.ClientAreaAnimation)
-                        {
-                            Assert.IsTrue(closed, "系统关闭动画时，通知应直接关闭");
-                            Assert.IsFalse(notificationWindow.HasAnimatedProperties);
-                            continue;
-                        }
-                        Assert.IsFalse(closed, "应等淡出结束后再关闭并补位");
-                        Assert.IsTrue(notificationWindow.HasAnimatedProperties, "关闭时应播放淡出动画");
-                        var fadeFrame = new DispatcherFrame();
-                        var fadeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(20) };
-                        var fadeDeadline = DateTime.UtcNow.AddSeconds(2);
-                        var sawPartialOpacity = false;
-                        fadeTimer.Tick += (_, _) =>
-                        {
-                            sawPartialOpacity |= notificationWindow.Opacity > 0 && notificationWindow.Opacity < 1;
-                            if (closed || DateTime.UtcNow > fadeDeadline) fadeFrame.Continue = false;
-                        };
-                        fadeTimer.Start();
-                        try { Dispatcher.PushFrame(fadeFrame); }
-                        finally { fadeTimer.Stop(); }
-                        Assert.IsTrue(sawPartialOpacity, "淡出过程中应存在半透明的中间帧");
-                        Assert.IsTrue(closed, "淡出结束后应关闭窗口");
+                        Assert.IsTrue(closed, "点击通知或关闭按钮后应立即关闭");
+                        Assert.IsFalse(notificationWindow.HasAnimatedProperties, "主动操作不应等待淡出动画");
                         Assert.IsFalse(notificationWindow.IsVisible, "测试不应弹出通知");
                     }
                     finally { notificationWindow.Close(); }
                 }
+                var autoClosed = false;
+                var autoOpenCount = 0;
+                var autoWindow = new MailNotificationWindow(notificationAccount, notificationMessage,
+                    notificationSettings with { DurationSeconds = 2 }, () =>
+                    {
+                        Assert.IsTrue(autoClosed, "自动淡出中点击通知也应先立即移除卡片");
+                        autoOpenCount++;
+                    });
+                try
+                {
+                    autoWindow.Closed += (_, _) => autoClosed = true;
+                    autoWindow.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
+                    var frame = new DispatcherFrame();
+                    var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(20) };
+                    var clock = System.Diagnostics.Stopwatch.StartNew();
+                    var sawFade = false;
+                    timer.Tick += (_, _) =>
+                    {
+                        sawFade |= clock.Elapsed.TotalSeconds > 2 && autoWindow.Opacity is > 0 and < 0.999;
+                        if (sawFade || autoClosed || clock.Elapsed.TotalSeconds > 7) frame.Continue = false;
+                    };
+                    timer.Start();
+                    try { Dispatcher.PushFrame(frame); }
+                    finally { timer.Stop(); }
+                    if (SystemParameters.ClientAreaAnimation)
+                    {
+                        Assert.IsTrue(sawFade, "自动到期仍应播放慢淡出");
+                        Assert.IsFalse(autoClosed, "慢淡出的中间帧不应提前关闭");
+                        ((Button)autoWindow.FindName("OpenButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                        Assert.IsTrue(autoClosed, "点击应立即打断自动淡出并关闭");
+                        Assert.AreEqual(1, autoOpenCount);
+                    }
+                    else Assert.IsTrue(autoClosed);
+                    Assert.IsFalse(autoWindow.IsVisible, "动画检查不应显示通知窗口");
+                }
+                finally { autoWindow.Close(); }
                 var verificationMessage = notificationMessage with
                 {
                     Subject = "服务邮箱验证邮件",
@@ -228,23 +248,8 @@ public sealed class SettingsWindowTests
                         markReadStarted = true;
                         return readCompletion.Task;
                     });
-                    if (SystemParameters.ClientAreaAnimation)
-                    {
-                        Assert.IsFalse(verificationClosed);
-                        Assert.IsFalse(markReadStarted);
-                        Assert.IsTrue(verificationWindow.HasAnimatedProperties, "复制成功后应立刻开始淡出");
-                        var fadeFrame = new DispatcherFrame();
-                        var fadeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(20) };
-                        var fadeDeadline = DateTime.UtcNow.AddSeconds(2);
-                        fadeTimer.Tick += (_, _) =>
-                        {
-                            if (markReadStarted || DateTime.UtcNow > fadeDeadline) fadeFrame.Continue = false;
-                        };
-                        fadeTimer.Start();
-                        try { Dispatcher.PushFrame(fadeFrame); }
-                        finally { fadeTimer.Stop(); }
-                    }
-                    Assert.IsTrue(verificationClosed);
+                    Assert.IsTrue(verificationClosed, "复制成功后应立即移除通知");
+                    Assert.IsFalse(verificationWindow.HasAnimatedProperties, "复制成功不播放淡出");
                     Assert.IsTrue(markReadStarted);
                     Assert.IsFalse(copyCompletion.IsCompleted);
                     readCompletion.SetResult();
@@ -305,7 +310,7 @@ public sealed class SettingsWindowTests
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        Assert.IsTrue(thread.Join(TimeSpan.FromSeconds(30)), "设置窗口检查超时");
+        Assert.IsTrue(thread.Join(TimeSpan.FromSeconds(45)), "设置窗口检查超时");
         if (failure is not null) Assert.Fail(failure.ToString());
     }
 }
