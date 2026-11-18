@@ -18,6 +18,8 @@ public interface IMailStore
     Task<int> GetUnreadCountAsync(CancellationToken cancellationToken = default);
     Task<IReadOnlySet<string>> GetMessageIdSetAsync(Guid accountId, CancellationToken cancellationToken = default);
     Task UpsertMessagesAsync(IEnumerable<MailMessage> messages, CancellationToken cancellationToken = default);
+    Task CacheMessageBodyAsync(MailMessage message, CancellationToken cancellationToken = default);
+    Task SaveMessageFlagAsync(PendingAction action, CancellationToken cancellationToken = default);
     Task ResetFolderAsync(Guid accountId, string folderId, CancellationToken cancellationToken = default);
     Task RemoveMissingMessagesAsync(Guid accountId, string folderId, IReadOnlySet<string> serverIdSet,
         DateTimeOffset since, CancellationToken cancellationToken = default);
@@ -35,7 +37,7 @@ public interface IMailProvider
     Task<IReadOnlyList<MailMessage>> GetRecentInboxAsync(Account account, string secret,
         SyncCursor? cursor, DateTimeOffset since, CancellationToken cancellationToken);
     Task<MailMessage> GetMessageAsync(Account account, string secret, string serverId,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken, Action<string>? onStage = null);
     Task SetFlagsAsync(Account account, string secret, string serverId,
         bool? isRead, bool? isStarred, CancellationToken cancellationToken);
     Task<IReadOnlyList<MailAttachment>> GetAttachmentsAsync(Account account, string secret,

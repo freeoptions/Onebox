@@ -142,5 +142,25 @@ public partial class SettingsWindow : Window
 
     private void OnTestNotification(object sender, RoutedEventArgs e) => TestNotificationRequested?.Invoke(this, EventArgs.Empty);
 
+    private void OnSaveDeepSeekApiKey(object sender, RoutedEventArgs e)
+    {
+        var apiKey = DeepSeekApiKeyBox.Password.Trim();
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            TranslationSettingsStatus.Text = "未填写新密钥，原密钥保持不变。";
+            return;
+        }
+        try
+        {
+            new WindowsCredentialVault().SaveDeepSeekApiKey(apiKey);
+            DeepSeekApiKeyBox.Clear();
+            TranslationSettingsStatus.Text = "API Key已保存。可在邮件详情点击“翻译成中文”。";
+        }
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception or ArgumentException)
+        {
+            TranslationSettingsStatus.Text = "密钥保存失败，请检查密钥和Windows凭据管理器后重试。";
+        }
+    }
+
     private void OnClose(object sender, RoutedEventArgs e) => Close();
 }

@@ -18,6 +18,10 @@ public sealed class WindowsCredentialVault : ICredentialVault
 
     public string? ReadGoogleClientSecret(string clientId) => ReadTarget(GoogleClientTarget(clientId));
 
+    public void SaveDeepSeekApiKey(string apiKey) => SaveTarget("OneBox/translation/deepseek", apiKey);
+
+    public string? ReadDeepSeekApiKey() => ReadTarget("OneBox/translation/deepseek");
+
     public void Save(Guid accountId, string secret) => SaveTarget(Target(accountId), secret);
 
     private static void SaveTarget(string target, string secret)

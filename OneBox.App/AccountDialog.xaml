@@ -5,8 +5,7 @@
   <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="760">
   <StackPanel Margin="32,28,32,30">
     <TextBlock Text="连接你的邮箱" FontSize="{DynamicResource FontSize25}" FontWeight="SemiBold"/>
-    <TextBlock Text="将邮件集中收纳，保留各账号独立授权。" Foreground="{StaticResource MutedBrush}" Margin="0,8,0,24"/>
-    <ComboBox x:Name="ProviderBox" MinHeight="40" SelectedIndex="0" SelectionChanged="OnProviderChanged" Margin="0,0,0,20">
+    <ComboBox x:Name="ProviderBox" MinHeight="40" SelectedIndex="0" SelectionChanged="OnProviderChanged" Margin="0,20,0,20">
       <ComboBoxItem Content="QQ邮箱"/><ComboBoxItem Content="网易邮箱（163 / 126 / yeah）"/><ComboBoxItem Content="Gmail"/>
     </ComboBox>
     <StackPanel x:Name="StandardFieldsPanel">

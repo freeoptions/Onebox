@@ -1,7 +1,9 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Markup;
 using System.Windows.Threading;
+using System.Xml.Linq;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using OneBox.App;
 using OneBox.Core;
@@ -21,14 +23,22 @@ public sealed class SettingsWindowTests
         var thread = new Thread(() =>
         {
             var directory = Path.Combine(Path.GetTempPath(), $"OneBox-test-{Guid.NewGuid():N}");
-            OneBoxApplication? application = null;
+            Application? application = null;
             SettingsWindow? window = null;
             try
             {
                 Directory.CreateDirectory(directory);
                 var path = Path.Combine(directory, "reader-settings.json");
-                application = new OneBoxApplication { ShutdownMode = ShutdownMode.OnExplicitShutdown };
-                application.InitializeComponent();
+                application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+                XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+                var markup = XDocument.Load(Path.Combine(AppContext.BaseDirectory, "Ui", "App.xaml")).Root!;
+                var resources = new XElement(markup.Element(presentation + "Application.Resources")!.Elements().Single());
+                var appNamespace = (XNamespace)"clr-namespace:OneBox.App;assembly=OneBox";
+                foreach (var element in resources.Descendants().Where(item => item.Name.NamespaceName == "clr-namespace:OneBox.App"))
+                    element.Name = appNamespace + element.Name.LocalName;
+                resources.SetAttributeValue(XNamespace.Xmlns + "local", appNamespace.NamespaceName);
+                resources.SetAttributeValue(XNamespace.Xmlns + "x", "http://schemas.microsoft.com/winfx/2006/xaml");
+                application.Resources = (ResourceDictionary)XamlReader.Parse(resources.ToString());
                 window = new SettingsWindow(new ReaderSettings(), path);
                 var fontScaleBox = (ComboBox)window.FindName("FontScaleBox");
                 var remoteImagesBox = (CheckBox)window.FindName("RemoteImagesBox");
@@ -150,9 +160,15 @@ public sealed class SettingsWindowTests
                         var dismissButton = (Button)notificationWindow.FindName(showContent ? "DismissButton" : "OpenButton");
                         dismissButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                         dismissButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                        Assert.AreEqual(showContent ? 0 : 1, openCount, "重复点击不能重复打开邮件");
+                        if (!SystemParameters.ClientAreaAnimation)
+                        {
+                            Assert.IsTrue(closed, "系统关闭动画时，通知应直接关闭");
+                            Assert.IsFalse(notificationWindow.HasAnimatedProperties);
+                            continue;
+                        }
                         Assert.IsFalse(closed, "应等淡出结束后再关闭并补位");
                         Assert.IsTrue(notificationWindow.HasAnimatedProperties, "关闭时应播放淡出动画");
-                        Assert.AreEqual(showContent ? 0 : 1, openCount, "重复点击不能重复打开邮件");
                         var fadeFrame = new DispatcherFrame();
                         var fadeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(20) };
                         var fadeDeadline = DateTime.UtcNow.AddSeconds(2);
@@ -171,7 +187,52 @@ public sealed class SettingsWindowTests
                     }
                     finally { notificationWindow.Close(); }
                 }
+                var verificationMessage = notificationMessage with
+                {
+                    Subject = "服务邮箱验证邮件",
+                    Preview = ""
+                };
+                Assert.IsTrue(MailVerificationCode.IsLikelyVerificationMail(verificationMessage));
+                var verificationWindow = new MailNotificationWindow(notificationAccount, verificationMessage,
+                    notificationSettings with { ShowContent = true, DurationSeconds = 2 }, () => { });
+                try
+                {
+                    var status = (TextBlock)verificationWindow.FindName("VerificationStatusText");
+                    var copyButton = (Button)verificationWindow.FindName("CopyCodeButton");
+                    var verificationClosed = false;
+                    verificationWindow.Closed += (_, _) => verificationClosed = true;
+                    verificationWindow.BeginVerificationCheck();
+                    verificationWindow.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
+                    Assert.AreEqual(Visibility.Visible, status.Visibility);
+                    Assert.AreEqual(Visibility.Collapsed, copyButton.Visibility);
+
+                    var loadFrame = new DispatcherFrame();
+                    var loadTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(2300) };
+                    loadTimer.Tick += (_, _) => loadFrame.Continue = false;
+                    loadTimer.Start();
+                    try { Dispatcher.PushFrame(loadFrame); }
+                    finally { loadTimer.Stop(); }
+
+                    var fullMessage = verificationMessage with { HtmlBody = "<p>您的验证码为: <b>aB456c</b></p>" };
+                    var result = MailVerificationCode.Find(fullMessage);
+                    Assert.IsFalse(verificationClosed, "正文读取超过通知设置时长时，弹窗应继续等待");
+                    verificationWindow.CompleteVerificationCheck(result.Code, () => Task.CompletedTask);
+                    Assert.AreEqual(Visibility.Collapsed, status.Visibility);
+                    Assert.AreEqual(Visibility.Visible, copyButton.Visibility);
+                    Assert.AreEqual("验证码 aB456c · 复制", copyButton.Content);
+                    var readCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    var copyCompletion = verificationWindow.CompleteVerificationCopyAsync(() =>
+                    {
+                        Assert.IsTrue(verificationClosed, "验证码复制成功后，应在回写已读前立即关闭通知");
+                        return readCompletion.Task;
+                    });
+                    Assert.IsTrue(verificationClosed);
+                    Assert.IsFalse(copyCompletion.IsCompleted);
+                    readCompletion.SetResult();
+                }
+                finally { verificationWindow.Close(); }
                 Assert.IsFalse(window.IsVisible, "测试不应打开设置窗口");
+                Assert.IsFalse(application.Windows.OfType<MainWindow>().Any(), "测试不应创建主窗口");
 
                 using var refusedProxy = new System.Net.Sockets.Socket(System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp);
                 refusedProxy.Bind(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 0));

@@ -222,8 +222,9 @@ public sealed class SqliteMailStore(string databasePath) : IMailStore
                     to_addresses=$to,received_at=$date,preview=$preview,is_read=$read,
                     is_starred=$starred,has_attachments=$attachments,
                     text_body=COALESCE($text,messages.text_body),
-                    html_body=COALESCE($html,messages.html_body),search_pinyin=$pinyin,
-                    search_initials=$initials
+                    html_body=COALESCE($html,messages.html_body),
+                    search_pinyin=CASE WHEN $text IS NULL AND messages.text_body IS NOT NULL THEN messages.search_pinyin ELSE $pinyin END,
+                    search_initials=CASE WHEN $text IS NULL AND messages.text_body IS NOT NULL THEN messages.search_initials ELSE $initials END
                 """;
             command.Parameters.AddWithValue("$account", message.AccountId.ToString("N"));
             command.Parameters.AddWithValue("$server", message.ServerId);
@@ -239,14 +240,68 @@ public sealed class SqliteMailStore(string databasePath) : IMailStore
             command.Parameters.AddWithValue("$attachments", message.HasAttachments);
             command.Parameters.AddWithValue("$text", (object?)message.TextBody ?? DBNull.Value);
             command.Parameters.AddWithValue("$html", (object?)message.HtmlBody ?? DBNull.Value);
-            var searchable = string.Join(' ', message.FromName, message.FromAddress, message.ToAddresses,
-                message.Subject, message.TextBody ?? "");
-            command.Parameters.AddWithValue("$pinyin", MailRules.NormalizeSearch(
-                PinyinConvert.GetPinyin(searchable).Replace("|", "")));
-            command.Parameters.AddWithValue("$initials", MailRules.NormalizeSearch(
-                PinyinConvert.GetPinyinFirstLetter(searchable)));
+            var (pinyin, initials) = CreateSearchIndex(message);
+            command.Parameters.AddWithValue("$pinyin", pinyin);
+            command.Parameters.AddWithValue("$initials", initials);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task CacheMessageBodyAsync(MailMessage message, CancellationToken cancellationToken = default)
+    {
+        var (pinyin, initials) = CreateSearchIndex(message);
+        await using var connection = Open();
+        await connection.OpenAsync(cancellationToken);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE messages SET preview=$preview, has_attachments=$attachments,
+                text_body=$text, html_body=$html, search_pinyin=$pinyin, search_initials=$initials
+            WHERE account_id=$account AND server_id=$server
+            """;
+        command.Parameters.AddWithValue("$account", message.AccountId.ToString("N"));
+        command.Parameters.AddWithValue("$server", message.ServerId);
+        command.Parameters.AddWithValue("$preview", message.Preview);
+        command.Parameters.AddWithValue("$attachments", message.HasAttachments);
+        command.Parameters.AddWithValue("$text", (object?)message.TextBody ?? DBNull.Value);
+        command.Parameters.AddWithValue("$html", (object?)message.HtmlBody ?? DBNull.Value);
+        command.Parameters.AddWithValue("$pinyin", pinyin);
+        command.Parameters.AddWithValue("$initials", initials);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static (string Pinyin, string Initials) CreateSearchIndex(MailMessage message)
+    {
+        var searchable = string.Join(' ', message.FromName, message.FromAddress, message.ToAddresses,
+            message.Subject, message.TextBody ?? "");
+        return (MailRules.NormalizeSearch(PinyinConvert.GetPinyin(searchable).Replace("|", "")),
+            MailRules.NormalizeSearch(PinyinConvert.GetPinyinFirstLetter(searchable)));
+    }
+
+    public async Task SaveMessageFlagAsync(PendingAction action, CancellationToken cancellationToken = default)
+    {
+        var (column, value) = action.Kind switch
+        {
+            PendingActionKind.MarkRead => ("is_read", true),
+            PendingActionKind.MarkUnread => ("is_read", false),
+            PendingActionKind.Star => ("is_starred", true),
+            PendingActionKind.Unstar => ("is_starred", false),
+            _ => throw new ArgumentOutOfRangeException(nameof(action))
+        };
+        await using var connection = Open();
+        await connection.OpenAsync(cancellationToken);
+        using var transaction = connection.BeginTransaction();
+        using var update = connection.CreateCommand();
+        update.Transaction = transaction;
+        update.CommandText = $"UPDATE messages SET {column}=$value WHERE account_id=$account AND server_id=$server";
+        update.Parameters.AddWithValue("$value", value);
+        update.Parameters.AddWithValue("$account", action.AccountId.ToString("N"));
+        update.Parameters.AddWithValue("$server", action.MessageServerId);
+        if (await update.ExecuteNonQueryAsync(cancellationToken) == 0) return;
+
+        using var enqueue = CreatePendingActionCommand(connection, action);
+        enqueue.Transaction = transaction;
+        await enqueue.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
     }
 
@@ -335,6 +390,12 @@ public sealed class SqliteMailStore(string databasePath) : IMailStore
     {
         await using var connection = Open();
         await connection.OpenAsync(cancellationToken);
+        using var command = CreatePendingActionCommand(connection, action);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static SqliteCommand CreatePendingActionCommand(SqliteConnection connection, PendingAction action)
+    {
         var command = connection.CreateCommand();
         command.CommandText = "INSERT INTO pending_actions VALUES($id,$account,$message,$kind,$date,$attempts)";
         command.Parameters.AddWithValue("$id", action.Id.ToString("N"));
@@ -343,7 +404,7 @@ public sealed class SqliteMailStore(string databasePath) : IMailStore
         command.Parameters.AddWithValue("$kind", (int)action.Kind);
         command.Parameters.AddWithValue("$date", action.CreatedAt.ToString("O"));
         command.Parameters.AddWithValue("$attempts", action.Attempts);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        return command;
     }
 
     public async Task<IReadOnlyList<PendingAction>> GetPendingAsync(Guid accountId, CancellationToken cancellationToken = default)

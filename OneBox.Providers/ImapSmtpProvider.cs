@@ -12,6 +12,8 @@ public sealed class ImapSmtpProvider(ProviderKind kind, MailProxy? proxy = null)
 {
     static ImapSmtpProvider() => MailEncoding.Initialize();
     private readonly MailProxy _proxy = proxy ?? new MailProxy();
+    private readonly object _bodySessionGate = new();
+    private readonly Dictionary<Guid, ImapBodySession> _bodySessionMap = [];
     public ProviderKind Kind { get; } = kind is ProviderKind.Qq or ProviderKind.NetEase or ProviderKind.GmailImap
         ? kind : throw new ArgumentOutOfRangeException(nameof(kind));
     public long? CurrentUidValidity { get; private set; }
@@ -33,15 +35,18 @@ public sealed class ImapSmtpProvider(ProviderKind kind, MailProxy? proxy = null)
         };
     }
 
-    internal async Task<ImapClient> OpenImapAsync(Account account, string secret, CancellationToken ct, Action<string>? onStage = null)
+    internal async Task<ImapClient> OpenImapAsync(Account account, string secret, CancellationToken ct,
+        Action<string>? onStage = null, Action<string>? onBodyStage = null)
     {
         var endpoint = Servers(account.Address);
         var client = new ImapClient();
         try
         {
             client.ProxyClient = _proxy.CreateClient(endpoint.Imap, endpoint.ImapPort);
+            onBodyStage?.Invoke("imap_connect_tls");
             onStage?.Invoke($"连接IMAP服务器及TLS握手（{endpoint.Imap}:{endpoint.ImapPort}，代理：{(client.ProxyClient is null ? "直连" : $"{client.ProxyClient.ProxyHost}:{client.ProxyClient.ProxyPort}")}）");
             await client.ConnectAsync(endpoint.Imap, endpoint.ImapPort, SecureSocketOptions.SslOnConnect, ct);
+            onBodyStage?.Invoke("imap_authenticate");
             onStage?.Invoke("IMAP登录认证");
             await client.AuthenticateAsync(account.Address, secret, ct);
             if (Kind == ProviderKind.NetEase && client.Capabilities.HasFlag(ImapCapabilities.Id))
@@ -185,7 +190,7 @@ public sealed class ImapSmtpProvider(ProviderKind kind, MailProxy? proxy = null)
     {
         var location = ImapMessageLocation.Parse(serverId);
         var folder = location.FolderName is null ? client.Inbox : await client.GetFolderAsync(location.FolderName, ct);
-        await folder.OpenAsync(access, ct);
+        if (!folder.IsOpen || folder.Access != access) await folder.OpenAsync(access, ct);
         if (location.UidValidity is uint validity && folder.UidValidity != validity)
             throw new MessageNotFoundException("邮件所在文件夹已重建，请重新同步后打开邮件。");
         return (folder, location.Uid);
@@ -198,26 +203,76 @@ public sealed class ImapSmtpProvider(ProviderKind kind, MailProxy? proxy = null)
             yield return new UniqueIdSet(uidBatch, SortOrder.Ascending);
     }
 
-    public async Task<MailMessage> GetMessageAsync(Account account, string secret, string serverId, CancellationToken ct)
+    public async Task<MailMessage> GetMessageAsync(Account account, string secret, string serverId,
+        CancellationToken ct, Action<string>? onStage = null)
     {
-        using var client = await OpenImapAsync(account, secret, ct);
-        var (inbox, uid) = await OpenMessageFolderAsync(client, serverId, FolderAccess.ReadOnly, ct);
-        using var mime = await inbox.GetMessageAsync(uid, ct);
+        var location = ImapMessageLocation.Parse(serverId);
+        ImapBodySession session;
+        lock (_bodySessionGate)
+        {
+            if (!_bodySessionMap.TryGetValue(account.Id, out session!))
+                _bodySessionMap.Add(account.Id, session = new ImapBodySession());
+        }
+        using var mime = await session.FetchAsync(location,
+            token => OpenImapAsync(account, secret, token, onBodyStage: onStage), ct, onStage);
+        onStage?.Invoke("prepare_body_and_inline_images");
         var htmlBody = await InlineImages.ResolveAsync(mime, account.Id, serverId, InlineImages.CacheDirectory, ct);
-        var result = new MailMessage(account.Id, serverId, "INBOX", mime.Subject ?? "（无主题）",
+        return new MailMessage(account.Id, serverId, "INBOX", mime.Subject ?? "（无主题）",
             mime.From.Mailboxes.FirstOrDefault()?.Name ?? "",
             mime.From.Mailboxes.FirstOrDefault()?.Address ?? "",
             string.Join(", ", mime.To.Mailboxes.Select(mailbox => mailbox.Address)),
             mime.Date, mime.TextBody?.Replace('\n', ' ').Trim() ?? "",
             false, false, mime.Attachments.Any(), mime.TextBody, htmlBody);
-        await client.DisconnectAsync(true, ct);
-        return result;
+    }
+
+    public Task CloseBodySessionsAsync(Guid? accountId = null)
+    {
+        ImapBodySession[] sessionList;
+        lock (_bodySessionGate)
+        {
+            if (accountId is Guid id)
+                sessionList = _bodySessionMap.Remove(id, out var session) ? [session] : [];
+            else
+            {
+                sessionList = _bodySessionMap.Values.ToArray();
+                _bodySessionMap.Clear();
+            }
+        }
+        return Task.WhenAll(sessionList.Select(session => session.CloseAsync()));
     }
 
     public async Task SetFlagsAsync(Account account, string secret, string serverId,
         bool? isRead, bool? isStarred, CancellationToken ct)
     {
         using var client = await OpenImapAsync(account, secret, ct);
+        await SetFlagsOnConnectionAsync(client, serverId, isRead, isStarred, ct);
+        await client.DisconnectAsync(true, ct);
+    }
+
+    public async Task ApplyPendingFlagsAsync(Account account, string secret, IReadOnlyList<PendingAction> actionList,
+        Func<Guid, Task> complete, CancellationToken ct)
+    {
+        using var client = await OpenImapAsync(account, secret, ct);
+        foreach (var action in actionList)
+        {
+            var (read, starred) = action.Kind switch
+            {
+                PendingActionKind.MarkRead => ((bool?)true, (bool?)null),
+                PendingActionKind.MarkUnread => (false, null),
+                PendingActionKind.Star => (null, true),
+                PendingActionKind.Unstar => (null, false),
+                _ => throw new ArgumentOutOfRangeException(nameof(action))
+            };
+            try { await SetFlagsOnConnectionAsync(client, action.MessageServerId, read, starred, ct); }
+            catch (MessageNotFoundException) { }
+            await complete(action.Id);
+        }
+        await client.DisconnectAsync(true, ct);
+    }
+
+    private static async Task SetFlagsOnConnectionAsync(ImapClient client, string serverId,
+        bool? isRead, bool? isStarred, CancellationToken ct)
+    {
         var (inbox, uid) = await OpenMessageFolderAsync(client, serverId, FolderAccess.ReadWrite, ct);
         var uidList = new[] { uid };
         if (isRead is bool read)
@@ -230,7 +285,6 @@ public sealed class ImapSmtpProvider(ProviderKind kind, MailProxy? proxy = null)
             if (starred) await inbox.AddFlagsAsync(uidList, MessageFlags.Flagged, true, ct);
             else await inbox.RemoveFlagsAsync(uidList, MessageFlags.Flagged, true, ct);
         }
-        await client.DisconnectAsync(true, ct);
     }
 
     public async Task<IReadOnlyList<MailAttachment>> GetAttachmentsAsync(Account account, string secret,

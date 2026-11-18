@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using OneBox.Core;
@@ -23,7 +24,6 @@ public sealed class MessageRow(MailMessage message, string accountLabel) : INoti
     {
         if (fullMessage.Key != Message.Key) throw new ArgumentException("正文与当前邮件不匹配", nameof(fullMessage));
         Message = Message with { TextBody = fullMessage.TextBody ?? "", HtmlBody = fullMessage.HtmlBody, Preview = fullMessage.Preview, HasAttachments = fullMessage.HasAttachments };
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Preview)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasAttachments)));
     }
     public string AccountLabel { get; } = accountLabel;
@@ -38,8 +38,18 @@ public sealed class MessageRow(MailMessage message, string accountLabel) : INoti
         }
     }
     public string Subject => Message.Subject;
-    public string Preview => Regex.Replace(Message.Preview, @"\s+", " ").Trim();
+    public string Preview
+    {
+        get
+        {
+            var text = string.IsNullOrWhiteSpace(Message.Preview) ? Message.TextBody ?? "" : Message.Preview;
+            return Regex.Replace(text[..Math.Min(text.Length, 512)], @"\s+", " ").Trim();
+        }
+    }
     public DateTime ReceivedAt => Message.ReceivedAt.LocalDateTime;
+    public string ReceivedAtText => ReceivedAt.Date == DateTime.Today
+        ? $"今天 {ReceivedAt:HH:mm}"
+        : ReceivedAt.ToString(ReceivedAt.Year == DateTime.Today.Year ? "M月d日" : "yyyy/M/d");
     public bool IsUnread => !Message.IsRead;
     public string ReadStatusText => IsUnread ? "未读" : "已读";
     public bool HasAttachments => Message.HasAttachments;
@@ -57,10 +67,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
 {
     private string _searchText = "";
     private string _statusText = "正在加载本地邮件…";
-    private string _currentFolderTitle = "所有收件箱";
+    private string _currentFolderTitle = "收件箱";
     private string _mailCountText = "0 封邮件 · 搜索本地已同步内容";
     private string _selectedSubject = "选择一封邮件";
     private string _selectedSender = "";
+    private string _selectedSenderInitial = "";
     private string _selectedRecipient = "";
     private string _selectedBody = "";
     private string _footerText = "准备就绪";
@@ -76,6 +87,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string _downloadDirectory = "";
     private string? _selectedMessageKey;
     private string _selectedDateText = "";
+    private string _selectedDateLabel = "";
     private readonly List<NoticeEntry> _noticeList = [];
     private bool _isDownloadingAttachments;
     public string NoticeText => _noticeList.Count == 0 ? StatusText : _noticeList[^1].Text;
@@ -116,6 +128,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string MailCountText { get => _mailCountText; set => Set(ref _mailCountText, value); }
     public string SelectedSubject { get => _selectedSubject; set => Set(ref _selectedSubject, value); }
     public string SelectedSender { get => _selectedSender; set => Set(ref _selectedSender, value); }
+    public string SelectedSenderInitial { get => _selectedSenderInitial; private set => Set(ref _selectedSenderInitial, value); }
     public string SelectedRecipient { get => _selectedRecipient; set => Set(ref _selectedRecipient, value); }
     public string SelectedBody { get => _selectedBody; set => Set(ref _selectedBody, value); }
     public string FooterText { get => _footerText; set => Set(ref _footerText, value); }
@@ -140,6 +153,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
     public bool IsListVisible => !HasSelectedMessage;
     public string SelectedDateText { get => _selectedDateText; private set => Set(ref _selectedDateText, value); }
+    public string SelectedDateLabel { get => _selectedDateLabel; private set => Set(ref _selectedDateLabel, value); }
     public bool CanGoPrevious => AdjacentMessage(-1) is not null;
     public bool CanGoNext => AdjacentMessage(1) is not null;
     public MessageRow? AdjacentMessage(int offset)
@@ -196,12 +210,21 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         HasSelectedMessage = message is not null;
         _selectedMessageKey = message?.Key;
-        SelectedDateText = message is null ? "" : message.ReceivedAt.LocalDateTime.ToString("yyyy年M月d日 HH:mm");
+        var receivedAt = message?.ReceivedAt.LocalDateTime;
+        SelectedDateText = receivedAt?.ToString("yyyy年M月d日 HH:mm") ?? "";
+        SelectedDateLabel = receivedAt switch
+        {
+            DateTime date when date.Date == DateTime.Today => $"今天 {date:HH:mm}",
+            DateTime date when date.Year == DateTime.Today.Year => date.ToString("M月d日 HH:mm"),
+            DateTime date => date.ToString("yyyy/M/d HH:mm"),
+            _ => ""
+        };
         OnPropertyChanged(nameof(CanGoPrevious));
         OnPropertyChanged(nameof(CanGoNext));
         SelectedSubject = message?.Subject ?? "选择一封邮件";
         var fromName = message is null ? "" : new MessageRow(message, "").FromName;
-        SelectedSender = message is null ? "" : $"发件人：{fromName}" +
+        SelectedSenderInitial = StringInfo.GetNextTextElement(fromName).ToUpperInvariant();
+        SelectedSender = message is null ? "" : fromName +
             (string.Equals(fromName, message.FromAddress, StringComparison.OrdinalIgnoreCase) ? "" : $" <{message.FromAddress}>");
         SelectedRecipient = message is null ? "" : $"收件人：{message.ToAddresses}";
         SelectedBody = message?.TextBody ?? message?.Preview ?? "";

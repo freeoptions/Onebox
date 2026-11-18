@@ -6,8 +6,10 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\onebox.ico</ApplicationIcon>
+    <EnableCompressionInSingleFile Condition="'$(Configuration)' == 'Release' and '$(PublishSingleFile)' == 'true'">true</EnableCompressionInSingleFile>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="OneBox.Tests" />
     <Resource Include="Assets\onebox.png" />
     <ProjectReference Include="..\OneBox.Core\OneBox.Core.csproj" />
     <ProjectReference Include="..\OneBox.Storage\OneBox.Storage.csproj" />

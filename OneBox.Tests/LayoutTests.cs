@@ -1,6 +1,8 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Markup;
+using System.Windows.Shell;
 using System.Xml.Linq;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using OneBox.App;
@@ -52,7 +54,7 @@ public sealed class LayoutTests
                         viewModel.Accounts.Add(new Account(Guid.NewGuid(), "example@163.com", "测试账号", ProviderKind.NetEase));
                         var message = new MailMessage(viewModel.Accounts[0].Id, "1", "INBOX", "这是一封用于核对阅读布局的邮件", "测试发件人",
                             "sender@example.com", "example@163.com", DateTimeOffset.UtcNow, "邮件摘要", false, true, true, "邮件正文");
-                        var readMessage = message with { ServerId = "2", FromName = "已读发件人", IsRead = true };
+                        var readMessage = message with { ServerId = "2", FromName = "已读发件人", IsRead = true, Preview = "", TextBody = null };
                         viewModel.ShowMessages(state is "reading" or "inbox" ? new[] { message, readMessage } : Array.Empty<MailMessage>());
                         viewModel.ShowMessage(state == "reading" ? message : null);
                         foreach (var expander in FindChildren<Expander>(grid)) expander.IsExpanded = state == "expanded";
@@ -61,6 +63,15 @@ public sealed class LayoutTests
                         grid.UpdateLayout();
                         viewModel.Notify(new string('测', 200), "失败");
                         grid.UpdateLayout();
+                        foreach (var name in new[] { "MinimizeCaption", "MaximizeCaption", "CloseCaption" })
+                        {
+                            var captionButton = (Button)grid.FindName(name);
+                            var captionPosition = captionButton.TranslatePoint(new Point(), grid);
+                            Assert.AreEqual(Visibility.Visible, captionButton.Visibility, name);
+                            Assert.IsTrue(captionButton.ActualWidth >= 40 && captionButton.ActualHeight >= 32, name);
+                            Assert.IsTrue(captionPosition.X >= 0 && captionPosition.X + captionButton.ActualWidth <= width, name);
+                            Assert.IsTrue(WindowChrome.GetIsHitTestVisibleInChrome(captionButton), name);
+                        }
                         Assert.IsLessThanOrEqualTo(width, grid.DesiredSize.Width, $"布局超出窗口：{width}");
                         var searchBox = (TextBox)grid.FindName("SearchBox");
                         Assert.IsGreaterThan(100d, searchBox.ActualWidth, "搜索框宽度不足");
@@ -72,11 +83,16 @@ public sealed class LayoutTests
                         var messageList = (ListBox)grid.FindName("MessageList");
                         var inboxPage = (Grid)grid.FindName("InboxPage");
                         var readerPage = (Grid)grid.FindName("ReaderPage");
+                        Assert.AreEqual(Visibility.Visible, inboxPage.Visibility);
+                        Assert.IsGreaterThanOrEqualTo(247d, messageList.ActualWidth, "邮件列表列过窄");
+                        Assert.IsGreaterThan(180d, messageList.ActualHeight, "失败提示挤占了邮件列表");
                         if (state == "reading")
                         {
-                            Assert.AreEqual(Visibility.Collapsed, inboxPage.Visibility);
                             Assert.AreEqual(Visibility.Visible, readerPage.Visibility);
-                            Assert.IsGreaterThanOrEqualTo(700d, readerPage.ActualWidth, "阅读页没有占满主区域");
+                            Assert.IsGreaterThanOrEqualTo(439d, readerPage.ActualWidth, "阅读区过窄");
+                            var listRight = inboxPage.TranslatePoint(new Point(inboxPage.ActualWidth, 0), grid).X;
+                            var readerLeft = readerPage.TranslatePoint(new Point(), grid).X;
+                            Assert.IsTrue(listRight <= readerLeft, "邮件列表与阅读区需要并排显示");
                             Assert.IsGreaterThan(180d, readerPage.ActualHeight, "阅读页高度不足");
                             var plainBody = (TextBox)grid.FindName("PlainBody");
                             var bodyPosition = plainBody.TranslatePoint(new Point(), readerPage);
@@ -94,37 +110,57 @@ public sealed class LayoutTests
                             viewModel.IsDownloadingAttachments = false;
                             grid.UpdateLayout();
                             Assert.IsTrue(attachmentButton.IsEnabled);
+                            if (width == 1420)
+                            {
+                                var splitter = FindChildren<GridSplitter>(grid).Single(item => Grid.GetColumn(item) == 1);
+                                var listWidth = inboxPage.ActualWidth;
+                                var readerWidth = readerPage.ActualWidth;
+                                splitter.RaiseEvent(new DragStartedEventArgs(0, 0) { RoutedEvent = Thumb.DragStartedEvent });
+                                splitter.RaiseEvent(new DragDeltaEventArgs(32, 0) { RoutedEvent = Thumb.DragDeltaEvent });
+                                splitter.RaiseEvent(new DragCompletedEventArgs(32, 0, false) { RoutedEvent = Thumb.DragCompletedEvent });
+                                grid.UpdateLayout();
+                                Assert.AreEqual(listWidth + 32, inboxPage.ActualWidth, 1, "拖动后邮件列表应变宽");
+                                Assert.AreEqual(readerWidth - 32, readerPage.ActualWidth, 1, "拖动后阅读区应变窄");
+                            }
                         }
                         else
                         {
-                            Assert.AreEqual(Visibility.Visible, inboxPage.Visibility);
                             Assert.AreEqual(Visibility.Collapsed, readerPage.Visibility);
-                            Assert.IsGreaterThanOrEqualTo(700d, messageList.ActualWidth, "列表没有占满主区域");
-                            Assert.IsGreaterThan(180d, messageList.ActualHeight, "失败提示挤占了邮件列表");
                             if (state == "inbox")
                             {
                                 var unreadSender = FindChildren<TextBlock>(messageList).Single(item => item.Text == "测试发件人");
                                 var readSender = FindChildren<TextBlock>(messageList).Single(item => item.Text == "已读发件人");
-                                Assert.AreEqual(FontWeights.Bold, unreadSender.FontWeight, "未读发件人未加粗");
+                                var row = viewModel.Messages[0];
+                                var container = (ListBoxItem)messageList.ItemContainerGenerator.ContainerFromItem(row);
+                                var subject = FindChildren<TextBlock>(container).Single(item => item.Text == message.Subject);
+                                Assert.AreEqual(FontWeights.SemiBold, unreadSender.FontWeight, "未读发件人未加粗");
+                                Assert.AreEqual(FontWeights.SemiBold, subject.FontWeight, "未读主题未加粗");
+                                Assert.AreSame(grid.Resources["InkBrush"], subject.Foreground);
                                 Assert.AreEqual(FontWeights.Normal, readSender.FontWeight, "已读发件人仍然加粗");
-                                viewModel.Messages[0].UpdateFlags(true, false);
+                                row.UpdateFlags(true, false);
                                 grid.UpdateLayout();
                                 Assert.AreEqual(FontWeights.Normal, unreadSender.FontWeight, "已读样式没有即时更新");
+                                Assert.AreEqual(FontWeights.Normal, subject.FontWeight, "已读主题仍然加粗");
+                                Assert.AreSame(grid.Resources["MutedBrush"], unreadSender.Foreground);
+                                Assert.AreSame(grid.Resources["MutedBrush"], subject.Foreground);
                                 var starButton = FindChildren<Button>(messageList).First(item => item.DataContext == viewModel.Messages[0]);
                                 var starImage = (Image)starButton.Content;
                                 Assert.AreSame(grid.Resources["UnfavoriteIcon"], starImage.Source);
                                 viewModel.Messages[0].UpdateFlags(true, true);
                                 grid.UpdateLayout();
                                 Assert.AreSame(grid.Resources["FavoriteIcon"], starImage.Source, "星标没有即时更新");
-                                var row = viewModel.Messages[0];
-                                var container = (ListBoxItem)messageList.ItemContainerGenerator.ContainerFromItem(row);
+                                var compactRow = (ListBoxItem)messageList.ItemContainerGenerator.ContainerFromItem(viewModel.Messages[1]);
+                                Assert.AreEqual(compactRow.ActualHeight, container.ActualHeight, 0.5, "列表行高不应受摘要影响");
+                                Assert.IsFalse(FindChildren<TextBlock>(container).Any(item => item.Text == message.Preview), "列表不应显示摘要");
                                 var rowHeight = container.ActualHeight;
                                 var multilineBody = string.Join("\r\n", Enumerable.Repeat("邮件正文与详情", 20));
                                 row.CacheBody(row.Message with { TextBody = multilineBody, Preview = multilineBody.Replace('\n', ' ') });
                                 grid.Measure(new Size(width, 640));
                                 grid.Arrange(new Rect(0, 0, width, 640));
                                 grid.UpdateLayout();
-                                Assert.AreEqual(rowHeight, container.ActualHeight, 0.5, "读取正文后，含回车的预览不应撑高列表行");
+                                Assert.AreEqual(rowHeight, container.ActualHeight, 0.5, "读取正文后列表行高应保持不变");
+                                Assert.IsFalse(FindChildren<TextBlock>(container).Any(item => item.Text.Contains("邮件正文与详情", StringComparison.Ordinal)),
+                                    "读取正文后列表不应显示正文片段");
                                 Assert.AreEqual(multilineBody, row.Message.TextBody, "列表显示处理不应修改完整正文");
                             }
                         }

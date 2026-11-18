@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
@@ -16,9 +17,16 @@ public sealed class GmailProvider(string clientId, string clientSecret, ICredent
     private const string Api = "https://gmail.googleapis.com/gmail/v1/users/me";
     private const string Scope = "https://www.googleapis.com/auth/gmail.modify";
     private readonly HttpClient _http = new(new HttpClientHandler { Proxy = proxy ?? new MailProxy() });
-    private string? _accessToken;
-    private string? _refreshFingerprint;
-    private DateTimeOffset _accessTokenExpires;
+    private sealed class AuthorizationSession
+    {
+        public SemaphoreSlim Gate { get; } = new(1, 1);
+        public AuthorizationToken? CachedToken { get; set; }
+    }
+
+    private sealed record AuthorizationToken(string Token, string Fingerprint, DateTimeOffset ExpiresAt);
+
+    private readonly ConcurrentDictionary<Guid, AuthorizationSession> _authorizationSessionMap = new();
+    private volatile AuthorizationToken? _newAuthorization;
     public ProviderKind Kind => ProviderKind.Gmail;
     public string? LatestHistoryId { get; private set; }
 
@@ -71,9 +79,8 @@ public sealed class GmailProvider(string clientId, string clientSecret, ICredent
         var root = tokenJson.RootElement;
         var refresh = root.GetProperty("refresh_token").GetString()
             ?? throw new InvalidOperationException("Google 未返回离线授权令牌");
-        _accessToken = root.GetProperty("access_token").GetString();
-        _refreshFingerprint = Fingerprint(refresh);
-        _accessTokenExpires = DateTimeOffset.UtcNow.AddSeconds(root.GetProperty("expires_in").GetInt32() - 60);
+        _newAuthorization = new AuthorizationToken(root.GetProperty("access_token").GetString()!, Fingerprint(refresh),
+            DateTimeOffset.UtcNow.AddSeconds(root.GetProperty("expires_in").GetInt32() - 60));
         using var profile = await GetAsync($"{Api}/profile", refresh, ct);
         return (profile.RootElement.GetProperty("emailAddress").GetString()!, refresh);
     }
@@ -185,13 +192,16 @@ public sealed class GmailProvider(string clientId, string clientSecret, ICredent
         return messageList;
     }
 
-    public async Task<MailMessage> GetMessageAsync(Account account, string secret, string serverId, CancellationToken ct)
+    public async Task<MailMessage> GetMessageAsync(Account account, string secret, string serverId,
+        CancellationToken ct, Action<string>? onStage = null)
     {
-        using var item = await GetAsync($"{Api}/messages/{Uri.EscapeDataString(serverId)}?format=raw", secret, ct, account.Id);
+        using var item = await GetAsync($"{Api}/messages/{Uri.EscapeDataString(serverId)}?format=raw", secret, ct, account.Id, onStage);
+        onStage?.Invoke("parse_mime");
         var root = item.RootElement;
         var labelSet = root.GetProperty("labelIds").EnumerateArray().Select(label => label.GetString()).ToHashSet();
         using var rawStream = new MemoryStream(FromBase64Url(root.GetProperty("raw").GetString()!));
         using var mime = await MimeMessage.LoadAsync(rawStream, ct);
+        onStage?.Invoke("prepare_body_and_inline_images");
         var htmlBody = await InlineImages.ResolveAsync(mime, account.Id, serverId, InlineImages.CacheDirectory, ct);
         var sender = mime.From.Mailboxes.FirstOrDefault();
         return new MailMessage(account.Id, serverId, "INBOX", mime.Subject ?? "（无主题）",
@@ -272,9 +282,12 @@ public sealed class GmailProvider(string clientId, string clientSecret, ICredent
         await RequireSuccessAsync(response, ct);
     }
 
-    private async Task<JsonDocument> GetAsync(string url, string refresh, CancellationToken ct, Guid? accountId = null)
+    private async Task<JsonDocument> GetAsync(string url, string refresh, CancellationToken ct, Guid? accountId = null,
+        Action<string>? onStage = null)
     {
+        onStage?.Invoke("gmail_authorize");
         var access = await AccessTokenAsync(refresh, ct, accountId);
+        onStage?.Invoke("gmail_download");
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", access);
         using var response = await _http.SendAsync(request, ct);
@@ -284,33 +297,42 @@ public sealed class GmailProvider(string clientId, string clientSecret, ICredent
 
     private async Task<string> AccessTokenAsync(string refresh, CancellationToken ct, Guid? accountId)
     {
-        if (accountId is Guid existingId) refresh = vault.Read(existingId) ?? refresh;
-        var fingerprint = Fingerprint(refresh);
-        if (_accessToken is not null && _refreshFingerprint == fingerprint && _accessTokenExpires > DateTimeOffset.UtcNow)
-            return _accessToken;
-        using var response = await _http.PostAsync("https://oauth2.googleapis.com/token",
-            new FormUrlEncodedContent(new Dictionary<string, string>
-            {
-                ["client_id"] = clientId,
-                ["client_secret"] = clientSecret,
-                ["refresh_token"] = refresh,
-                ["grant_type"] = "refresh_token"
-            }), ct);
-        await RequireSuccessAsync(response, ct);
-        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
-        _accessToken = document.RootElement.GetProperty("access_token").GetString()!;
-        _refreshFingerprint = fingerprint;
-        _accessTokenExpires = DateTimeOffset.UtcNow.AddSeconds(document.RootElement.GetProperty("expires_in").GetInt32() - 60);
-        if (accountId is Guid id && document.RootElement.TryGetProperty("refresh_token", out var rotated))
+        var session = _authorizationSessionMap.GetOrAdd(accountId ?? Guid.Empty, _ => new AuthorizationSession());
+        await session.Gate.WaitAsync(ct);
+        try
         {
-            var newRefresh = rotated.GetString();
-            if (!string.IsNullOrWhiteSpace(newRefresh))
+            if (accountId is Guid existingId) refresh = vault.Read(existingId) ?? refresh;
+            var fingerprint = Fingerprint(refresh);
+            if (session.CachedToken is { } cached && cached.Fingerprint == fingerprint && cached.ExpiresAt > DateTimeOffset.UtcNow)
+                return cached.Token;
+            if (_newAuthorization is { } recent && recent.Fingerprint == fingerprint && recent.ExpiresAt > DateTimeOffset.UtcNow)
+            {
+                session.CachedToken = recent;
+                return recent.Token;
+            }
+
+            using var response = await _http.PostAsync("https://oauth2.googleapis.com/token",
+                new FormUrlEncodedContent(new Dictionary<string, string>
+                {
+                    ["client_id"] = clientId,
+                    ["client_secret"] = clientSecret,
+                    ["refresh_token"] = refresh,
+                    ["grant_type"] = "refresh_token"
+                }), ct);
+            await RequireSuccessAsync(response, ct);
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            var token = document.RootElement.GetProperty("access_token").GetString()!;
+            var expiresAt = DateTimeOffset.UtcNow.AddSeconds(document.RootElement.GetProperty("expires_in").GetInt32() - 60);
+            if (accountId is Guid id && document.RootElement.TryGetProperty("refresh_token", out var rotated)
+                && rotated.GetString() is { Length: > 0 } newRefresh && !string.IsNullOrWhiteSpace(newRefresh))
             {
                 vault.Save(id, newRefresh);
-                _refreshFingerprint = Fingerprint(newRefresh);
+                fingerprint = Fingerprint(newRefresh);
             }
+            session.CachedToken = new AuthorizationToken(token, fingerprint, expiresAt);
+            return token;
         }
-        return _accessToken;
+        finally { session.Gate.Release(); }
     }
 
     private static void CollectAttachments(JsonElement part, Guid accountId, string messageId,

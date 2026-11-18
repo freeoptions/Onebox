@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace OneBox.Storage;
 
-public sealed class DiagnosticLog(string directory)
+public sealed class DiagnosticLog(string directory, string filePrefix = "imap-idle")
 {
     private readonly object _gate = new();
     private DateOnly? _cleanedDate;
@@ -21,16 +21,16 @@ public sealed class DiagnosticLog(string directory)
                 var today = DateOnly.FromDateTime(now.LocalDateTime);
                 if (_cleanedDate != today)
                 {
-                    foreach (var path in Directory.EnumerateFiles(directory, "imap-idle-*.log"))
+                    foreach (var path in Directory.EnumerateFiles(directory, $"{filePrefix}-*.log"))
                     {
                         var name = Path.GetFileNameWithoutExtension(path);
-                        if (DateOnly.TryParseExact(name["imap-idle-".Length..], "yyyy-MM-dd", out var date) && date < today.AddDays(-6))
+                        if (DateOnly.TryParseExact(name[(filePrefix.Length + 1)..], "yyyy-MM-dd", out var date) && date < today.AddDays(-6))
                             File.Delete(path);
                     }
                     _cleanedDate = today;
                 }
                 var entry = JsonSerializer.Serialize(new { Time = now, Kind = kind, Text = text, Details = details }, JsonOptions);
-                File.AppendAllText(Path.Combine(directory, $"imap-idle-{today:yyyy-MM-dd}.log"), entry + Environment.NewLine, Encoding.UTF8);
+                File.AppendAllText(Path.Combine(directory, $"{filePrefix}-{today:yyyy-MM-dd}.log"), entry + Environment.NewLine, Encoding.UTF8);
                 return true;
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return false; }

@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
@@ -12,11 +13,24 @@ public sealed class HtmlMessageRenderer(CoreWebView2 web)
     private Task? _documentReady;
     private bool _allowRemoteImages;
     private long _revision;
+    private const string TranslationNodesScript = """
+        const getTranslationNodes = content => {
+            const nodeList = [];
+            const walker = content.createTreeWalker(content.body, NodeFilter.SHOW_TEXT);
+            while (walker.nextNode()) {
+                const node = walker.currentNode;
+                if (node.nodeValue.trim() && !node.parentElement.closest('script,style,noscript,template')) nodeList.push(node);
+            }
+            return nodeList;
+        };
+        """;
 
-    public async Task<bool> ShowAsync(string htmlBody, bool allowRemoteImages, CancellationToken cancellationToken = default)
+    public async Task<bool> ShowAsync(string htmlBody, bool allowRemoteImages, CancellationToken cancellationToken = default,
+        IReadOnlyList<string>? translatedTextList = null, Action<string>? onStage = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var revision = ++_revision;
+        onStage?.Invoke("webview_prepare_document");
         if (_documentReady is null || _documentReady.IsFaulted || _allowRemoteImages != allowRemoteImages)
         {
             _allowRemoteImages = allowRemoteImages;
@@ -25,11 +39,25 @@ public sealed class HtmlMessageRenderer(CoreWebView2 web)
         await _documentReady.WaitAsync(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         if (revision != _revision) return false;
-        await web.ExecuteScriptAsync("""
+        onStage?.Invoke("webview_render_html");
+        var result = await web.ExecuteScriptAsync("""
             (() => {
                 const content = new DOMParser().parseFromString(
             """ + JsonSerializer.Serialize(htmlBody) + """
                 , 'text/html');
+            """ + TranslationNodesScript + """
+                const translatedTextList =
+            """ + JsonSerializer.Serialize(translatedTextList) + """
+                ;
+                if (translatedTextList !== null) {
+                    const nodeList = getTranslationNodes(content);
+                    if (nodeList.length !== translatedTextList.length) return false;
+                    nodeList.forEach((node, index) => {
+                        const leading = node.nodeValue.match(/^\s*/)[0];
+                        const trailing = node.nodeValue.match(/\s*$/)[0];
+                        node.nodeValue = leading + translatedTextList[index] + trailing;
+                    });
+                }
                 content.querySelectorAll('meta[http-equiv="refresh" i]').forEach(item => item.remove());
                 const fragment = document.createDocumentFragment();
                 content.head.querySelectorAll('style').forEach(item => fragment.append(item));
@@ -40,10 +68,26 @@ public sealed class HtmlMessageRenderer(CoreWebView2 web)
                 }
                 document.body.replaceChildren(fragment);
                 window.scrollTo(0, 0);
+                return true;
             })();
             """);
         cancellationToken.ThrowIfCancellationRequested();
+        if (result != "true") throw new InvalidDataException("译文与原邮件文字位置不匹配，原文已保留。");
         return revision == _revision;
+    }
+
+    public async Task<IReadOnlyList<string>> ReadTranslationTextAsync(string htmlBody)
+    {
+        var result = await web.ExecuteScriptAsync("""
+            (() => {
+                const content = new DOMParser().parseFromString(
+            """ + JsonSerializer.Serialize(htmlBody) + """
+                , 'text/html');
+            """ + TranslationNodesScript + """
+                return getTranslationNodes(content).map(node => node.nodeValue.trim());
+            })();
+            """);
+        return JsonSerializer.Deserialize<string[]>(result) ?? throw new InvalidDataException("无法读取邮件中的可翻译文字。");
     }
 
     private async Task LoadDocumentAsync(bool allowRemoteImages)

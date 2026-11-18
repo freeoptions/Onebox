@@ -4,13 +4,10 @@
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False" Background="{StaticResource CanvasBrush}">
   <Grid>
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-    <StackPanel Margin="28,24,28,20">
-      <TextBlock Text="设置" FontSize="{DynamicResource FontSize25}" FontWeight="SemiBold"/>
-      <TextBlock Text="按你的习惯阅读和收纳邮件。" Foreground="{StaticResource MutedBrush}" Margin="0,8,0,0" TextWrapping="Wrap"/>
-    </StackPanel>
+    <TextBlock Text="设置" FontSize="{DynamicResource FontSize25}" FontWeight="SemiBold" Margin="28,22,28,16"/>
     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
       <StackPanel Margin="28,0,28,20">
-        <Border Background="{StaticResource SurfaceBrush}" CornerRadius="{StaticResource PanelRadius}" Padding="20" Margin="0,0,0,16">
+        <Border Style="{StaticResource SettingsCard}">
           <StackPanel>
             <TextBlock Text="显示" FontSize="{DynamicResource FontSize14}" FontWeight="SemiBold" Margin="0,0,0,16"/>
             <Grid>
@@ -32,7 +29,7 @@
             </Border>
           </StackPanel>
         </Border>
-        <Border Background="{StaticResource SurfaceBrush}" CornerRadius="{StaticResource PanelRadius}" Padding="20" Margin="0,0,0,16">
+        <Border Style="{StaticResource SettingsCard}">
           <StackPanel>
             <TextBlock Text="网络代理" FontSize="{DynamicResource FontSize14}" FontWeight="SemiBold" Margin="0,0,0,16"/>
             <TextBlock Text="用于邮箱收发、同步和连接验证" Foreground="{StaticResource MutedBrush}" FontSize="{DynamicResource FontSize12}" Margin="0,0,0,12" TextWrapping="Wrap"/>
@@ -51,7 +48,19 @@
             <TextBlock Text="保存后对后续连接生效，自定义代理填写后点击“应用代理”。" Foreground="{StaticResource MutedBrush}" FontSize="{DynamicResource FontSize12}" TextWrapping="Wrap" Margin="0,8,0,0"/>
           </StackPanel>
         </Border>
-        <Border Background="{StaticResource SurfaceBrush}" CornerRadius="{StaticResource PanelRadius}" Padding="20" Margin="0,0,0,16">
+        <Border Style="{StaticResource SettingsCard}">
+          <StackPanel>
+            <TextBlock Text="邮件翻译" FontSize="{DynamicResource FontSize14}" FontWeight="SemiBold" Margin="0,0,0,16"/>
+            <TextBlock Text="DeepSeek · deepseek-flash"/>
+            <TextBlock Text="点击后仅翻译标题和正文，发件人、收件人和收信时间保持原样。译文保存在本机，重新打开或重启后可复用。" Foreground="{StaticResource MutedBrush}" FontSize="{DynamicResource FontSize12}" TextWrapping="Wrap" Margin="0,8,0,14"/>
+            <TextBlock Text="API Key" Margin="0,0,0,8"/>
+            <PasswordBox x:Name="DeepSeekApiKeyBox" AutomationProperties.Name="DeepSeek API Key"/>
+            <TextBlock Text="密钥仅保存在Windows凭据管理器。填写新密钥可覆盖，留空保留原密钥。点击翻译会将标题和正文发送给DeepSeek，并按用量计费。" Foreground="{StaticResource MutedBrush}" FontSize="{DynamicResource FontSize12}" TextWrapping="Wrap" Margin="0,8,0,12"/>
+            <Button Content="保存API Key" Click="OnSaveDeepSeekApiKey" HorizontalAlignment="Left" Style="{StaticResource OutlineButton}"/>
+            <TextBlock x:Name="TranslationSettingsStatus" TextWrapping="Wrap" Margin="0,8,0,0"/>
+          </StackPanel>
+        </Border>
+        <Border Style="{StaticResource SettingsCard}">
           <StackPanel>
             <TextBlock Text="新邮件轻提示" FontSize="{DynamicResource FontSize14}" FontWeight="SemiBold" Margin="0,0,0,16"/>
             <CheckBox x:Name="NotificationsBox" Content="开启桌面通知" Click="OnNotificationChanged"/>

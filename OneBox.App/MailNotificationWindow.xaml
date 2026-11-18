@@ -3,10 +3,15 @@
         Title="OneBox新邮件" Width="368" SizeToContent="Height" WindowStyle="None" ResizeMode="NoResize"
         AllowsTransparency="True" Background="Transparent" ShowInTaskbar="False" ShowActivated="False"
         Topmost="True" Style="{StaticResource AppWindow}" FontSize="13">
-  <Border Margin="5" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource LineBrush}"
-          BorderThickness="1" CornerRadius="{StaticResource PanelRadius}">
+  <Grid Margin="5" SnapsToDevicePixels="True">
+  <Border Background="{StaticResource SurfaceBrush}" CornerRadius="{StaticResource PanelRadius}">
     <Border.Effect><DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.14"/></Border.Effect>
+  </Border>
+  <Border Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource LineBrush}"
+          RenderOptions.ClearTypeHint="Enabled" TextOptions.TextRenderingMode="ClearType"
+          BorderThickness="1" CornerRadius="{StaticResource PanelRadius}">
     <Grid>
+      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
       <Button x:Name="OpenButton" Click="OnOpen" Background="Transparent" BorderThickness="0" Padding="16,12"
               HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" Cursor="Hand">
         <Button.Template>
@@ -30,12 +35,17 @@
             <TextBlock x:Name="SenderText" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
             <TextBlock x:Name="SubjectText" Margin="0,5,0,0" TextTrimming="CharacterEllipsis" Foreground="{StaticResource AccentBrush}"/>
             <TextBlock x:Name="PreviewText" Margin="0,4,0,0" FontSize="11" TextTrimming="CharacterEllipsis" Foreground="{StaticResource MutedBrush}"/>
+            <TextBlock x:Name="VerificationStatusText" Margin="0,4,0,0" FontSize="11" Visibility="Collapsed"
+                       Foreground="{StaticResource MutedBrush}"/>
           </StackPanel>
         </Grid>
       </Button>
+      <Button Grid.Row="1" x:Name="CopyCodeButton" Content="复制验证码" Click="OnCopyCode" Visibility="Collapsed"
+              HorizontalAlignment="Left" Margin="60,0,16,12" Style="{StaticResource OutlineButton}"/>
       <Button x:Name="DismissButton" Content="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="10" Width="24" Height="24" Padding="0"
               HorizontalAlignment="Right" VerticalAlignment="Top" Margin="4" Click="OnDismiss"
               ToolTip="关闭通知" AutomationProperties.Name="关闭通知" Background="Transparent" BorderThickness="0"/>
     </Grid>
   </Border>
+  </Grid>
 </Window>

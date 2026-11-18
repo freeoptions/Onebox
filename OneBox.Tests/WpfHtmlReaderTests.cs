@@ -53,6 +53,43 @@ public sealed class WpfHtmlReaderTests
                     window.getSelection().addRange(range);
                     """);
                 Assert.AreEqual("带样式的邮件", await renderer.ReadSelectedTextAsync());
+                const string html = """
+                    <html><head><style>.card{background:rgb(0,85,221);padding:24px}td{border:1px solid red}</style></head>
+                    <body style="background:rgb(240,240,240)"><div class="card"><h1>Invoice overdue</h1>
+                    <table><tr><td><strong>Amount:</strong></td><td>$9.99 USD</td></tr></table>
+                    <a href="https://example.invalid/invoice?id=2017256" style="color:red">Pay now</a>
+                    <img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" width="1" height="1">
+                    </div><script>document.title='mail-script-ran'</script></body></html>
+                    """;
+                Assert.IsTrue(await renderer.ShowAsync(html, false));
+                var originalHtml = await view.CoreWebView2.ExecuteScriptAsync("document.body.innerHTML");
+                var originalImage = await view.CoreWebView2.ExecuteScriptAsync("document.querySelector('img').getAttribute('src')");
+                var textList = await renderer.ReadTranslationTextAsync(html);
+                CollectionAssert.AreEqual(new[] { "Invoice overdue", "Amount:", "$9.99 USD", "Pay now" }, textList.ToArray());
+                Assert.IsTrue(await renderer.ShowAsync(html, false, translatedTextList:
+                    new[] { "首次账单逾期通知", "应付金额：", "$9.99 USD", "付款<b>原样文字</b>" }));
+                Assert.AreEqual("\"rgb(0, 85, 221)\"", await view.CoreWebView2.ExecuteScriptAsync("getComputedStyle(document.querySelector('.card')).backgroundColor"));
+                Assert.AreEqual("\"24px\"", await view.CoreWebView2.ExecuteScriptAsync("getComputedStyle(document.querySelector('.card')).padding"));
+                Assert.AreEqual("1", await view.CoreWebView2.ExecuteScriptAsync("document.querySelectorAll('table tr').length"));
+                Assert.AreEqual("\"应付金额：\"", await view.CoreWebView2.ExecuteScriptAsync("document.querySelector('strong').textContent"));
+                Assert.AreEqual("\"https://example.invalid/invoice?id=2017256\"", await view.CoreWebView2.ExecuteScriptAsync("document.querySelector('a').getAttribute('href')"));
+                Assert.AreEqual(originalImage, await view.CoreWebView2.ExecuteScriptAsync("document.querySelector('img').getAttribute('src')"));
+                Assert.AreEqual("0", await view.CoreWebView2.ExecuteScriptAsync("document.querySelectorAll('a b').length"), "译文中的HTML必须作为文字显示");
+                Assert.IsTrue(await renderer.ShowAsync(html, true, translatedTextList:
+                    new[] { "首次账单逾期通知", "应付金额：", "$9.99 USD", "付款<b>原样文字</b>" }));
+                Assert.AreEqual("\"应付金额：\"", await view.CoreWebView2.ExecuteScriptAsync("document.querySelector('strong').textContent"), "切换图片加载策略时应保留译文");
+                StringAssert.Contains(await view.CoreWebView2.ExecuteScriptAsync("document.querySelector('meta[http-equiv]').content"), "https: http:");
+                var imageWidth = "0";
+                for (var attempt = 0; attempt < 20 && imageWidth == "0"; attempt++)
+                {
+                    await Task.Delay(50);
+                    imageWidth = await view.CoreWebView2.ExecuteScriptAsync("document.querySelector('img').naturalWidth");
+                }
+                Assert.AreEqual("1", imageWidth, "重载后的译文图片应可解码");
+                Assert.IsTrue(await renderer.ShowAsync(html, false));
+                Assert.AreEqual(originalHtml, await view.CoreWebView2.ExecuteScriptAsync("document.body.innerHTML"), "切回原文应完整恢复原HTML");
+                await Assert.ThrowsAsync<InvalidDataException>(() => renderer.ShowAsync(html, false, translatedTextList: new[] { "不完整译文" }));
+                Assert.AreEqual(originalHtml, await view.CoreWebView2.ExecuteScriptAsync("document.body.innerHTML"), "节点不匹配时不应覆盖原文");
                 Assert.IsFalse(view.CoreWebView2.Settings.IsScriptEnabled, "选中自动复制不应启用邮件脚本");
                 Assert.AreEqual(Visibility.Hidden, view.Visibility);
             }

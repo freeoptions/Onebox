@@ -3,6 +3,7 @@ using System.Windows.Interop;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using OneBox.Core;
+using OneBox.Providers;
 using OneBox.Storage;
 using Forms = System.Windows.Forms;
 
@@ -14,14 +15,19 @@ public sealed class DesktopNotificationService : IDisposable
     private readonly List<(MailNotificationWindow Window, Account Account, MailMessage Message, bool Preview)> _activeList = [];
     private readonly Dispatcher _dispatcher;
     private readonly Action<MailMessage> _open;
+    private readonly Func<Account, MailMessage, CancellationToken, Task<string?>> _findCode;
+    private readonly Func<MailMessage, Task> _markRead;
     private DesktopNotificationSettings _settings = new();
     private bool _disposed;
     private bool _clearing;
 
-    public DesktopNotificationService(Dispatcher dispatcher, Action<MailMessage> open)
+    public DesktopNotificationService(Dispatcher dispatcher, Action<MailMessage> open,
+        Func<Account, MailMessage, CancellationToken, Task<string?>> findCode, Func<MailMessage, Task> markRead)
     {
         _dispatcher = dispatcher;
         _open = open;
+        _findCode = findCode;
+        _markRead = markRead;
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
     }
 
@@ -79,13 +85,36 @@ public sealed class DesktopNotificationService : IDisposable
             _activeList.Add((window, item.Account, item.Message, item.Preview));
             window.SourceInitialized += (_, _) => Arrange();
             window.SizeChanged += (_, _) => Arrange();
+            var checkCode = !item.Preview && _settings.ShowContent;
+            var waitForCode = checkCode && MailVerificationCode.IsLikelyVerificationMail(item.Message);
+            if (waitForCode) window.BeginVerificationCheck();
             window.Show();
+            if (checkCode) _ = ShowVerificationCodeAsync(window, item.Account, item.Message);
             Arrange();
             // 首张卡片创建后才能获得当前DPI下的实际窗口高度。
             GetWindowRect(new WindowInteropHelper(window).Handle, out var bounds);
             maxVisible = Math.Min(maxVisible, Math.Max(1, (area.Height - 24) / Math.Max(1, bounds.Bottom - bounds.Top + 8)));
         }
         Arrange();
+    }
+
+    private async Task ShowVerificationCodeAsync(MailNotificationWindow window, Account account, MailMessage message)
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.CancelAfter(TimeSpan.FromSeconds(15));
+        void Cancel(object? sender, EventArgs e) => cancellation.Cancel();
+        window.Closed += Cancel;
+        string? code = null;
+        try
+        {
+            code = await _findCode(account, message, cancellation.Token);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        finally
+        {
+            window.Closed -= Cancel;
+            window.CompleteVerificationCheck(cancellation.IsCancellationRequested ? null : code, () => _markRead(message));
+        }
     }
 
     private void Arrange()

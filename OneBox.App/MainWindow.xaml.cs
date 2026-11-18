@@ -17,10 +17,12 @@ public partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel = new();
     private readonly IMailStore _store;
+    private readonly DeepSeekTranslator _translator;
     private readonly string _dataDirectory;
     private readonly string _readerSettingsPath;
     private readonly string _syncSchedulePath;
     private readonly DiagnosticLog _listenerLog;
+    private readonly DiagnosticLog _mailBodyLog;
     private bool _listenerLogWriteWarning;
     private SyncScheduleSettings _syncScheduleSettings = new();
     private ReaderSettings _readerSettings = new();
@@ -56,6 +58,9 @@ public partial class MainWindow : Window
     private Guid? _selectedAccount;
     private bool _starredOnly;
     private double _listScrollOffset;
+    private int _messageListLoadRevision;
+    private int _trayUnreadCountRevision;
+    private readonly SemaphoreSlim _bodyCacheWriteLock = new(1, 1);
     private readonly SemaphoreSlim _flagWriteLock = new(1, 1);
     private readonly SemaphoreSlim _pendingWriteLock = new(1, 1);
 
@@ -63,12 +68,15 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         _mailLinkNavigation = new MailLinkNavigation(OpenMailLink);
+        _translator = new DeepSeekTranslator(_mailProxy);
         DataContext = _viewModel;
-        _desktopNotifications = new DesktopNotificationService(Dispatcher, OpenNotificationMail);
+        _desktopNotifications = new DesktopNotificationService(Dispatcher, OpenNotificationMail, FindNotificationCodeAsync, MarkNotificationReadAsync);
+        _bodyPrefetchTimer.Tick += OnBodyPrefetchTick;
         _dataDirectory = AppContext.BaseDirectory;
         _readerSettingsPath = System.IO.Path.Combine(_dataDirectory, "reader-settings.json");
         _syncSchedulePath = System.IO.Path.Combine(_dataDirectory, "sync-schedule.json");
         _listenerLog = new DiagnosticLog(System.IO.Path.Combine(_dataDirectory, "logs"));
+        _mailBodyLog = new DiagnosticLog(System.IO.Path.Combine(_dataDirectory, "logs"), "mail-body");
         _store = new SqliteMailStore(System.IO.Path.Combine(_dataDirectory, "mail.db"));
         _providerMap = new Dictionary<ProviderKind, IMailProvider>
         {
@@ -185,6 +193,23 @@ public partial class MainWindow : Window
         Show();
         if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
         Activate();
+    }
+
+    private void OnMinimizeWindow(object sender, RoutedEventArgs e) => SystemCommands.MinimizeWindow(this);
+
+    private void OnToggleWindowSize(object sender, RoutedEventArgs e)
+    {
+        if (WindowState == WindowState.Maximized) SystemCommands.RestoreWindow(this);
+        else SystemCommands.MaximizeWindow(this);
+    }
+
+    private void OnCloseWindow(object sender, RoutedEventArgs e) => SystemCommands.CloseWindow(this);
+
+    private void OnOpenActionMenu(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.Button { ContextMenu: { } menu } button) return;
+        menu.PlacementTarget = button;
+        menu.IsOpen = true;
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -341,22 +366,36 @@ public partial class MainWindow : Window
 
     private async Task LoadMessagesAsync()
     {
-        var selectedKey = (MessageList.SelectedItem as MessageRow)?.Message.Key;
-        var messages = await _store.GetMessagesAsync(_selectedAccount, "INBOX", _viewModel.SearchText, starredOnly: _starredOnly);
+        var revision = ++_messageListLoadRevision;
+        var accountId = _selectedAccount;
+        var searchText = _viewModel.SearchText;
+        var starredOnly = _starredOnly;
+        await _flagWriteLock.WaitAsync();
+        try
+        {
+            if (_exiting || revision != _messageListLoadRevision) return;
+            var messageList = await Task.Run(() => _store.GetMessagesAsync(accountId, "INBOX", searchText, starredOnly: starredOnly));
+            if (_exiting || revision != _messageListLoadRevision || accountId != _selectedAccount ||
+                starredOnly != _starredOnly || searchText != _viewModel.SearchText) return;
+            var selectedKey = (MessageList.SelectedItem as MessageRow)?.Message.Key;
+            _viewModel.ShowMessages(messageList);
+            if (selectedKey is not null)
+                MessageList.SelectedItem = _viewModel.Messages.FirstOrDefault(row => row.Message.Key == selectedKey);
+            _viewModel.CurrentFolderTitle = _starredOnly ? "收藏夹" : _selectedAccount is Guid id
+                ? _viewModel.Accounts.FirstOrDefault(account => account.Id == id)?.DisplayName ?? "收件箱"
+                : "收件箱";
+            UpdateSyncProblem();
+            ScheduleBodyPrefetch();
+        }
+        finally { _flagWriteLock.Release(); }
         await UpdateTrayUnreadCountAsync();
-        _viewModel.ShowMessages(messages);
-        if (selectedKey is not null)
-            MessageList.SelectedItem = _viewModel.Messages.FirstOrDefault(row => row.Message.Key == selectedKey);
-        _viewModel.CurrentFolderTitle = _starredOnly ? "收藏夹" : _selectedAccount is Guid id
-            ? _viewModel.Accounts.FirstOrDefault(account => account.Id == id)?.DisplayName ?? "收件箱"
-            : "所有收件箱";
-        UpdateSyncProblem();
     }
 
     private async Task UpdateTrayUnreadCountAsync()
     {
-        var unreadCount = await _store.GetUnreadCountAsync();
-        if (_exiting || _trayUnreadCount == unreadCount) return;
+        var revision = ++_trayUnreadCountRevision;
+        var unreadCount = await Task.Run(() => _store.GetUnreadCountAsync());
+        if (_exiting || revision != _trayUnreadCountRevision || _trayUnreadCount == unreadCount) return;
         var icon = unreadCount > 0 ? TrayIconBadge.Create(_trayBaseIcon, unreadCount) : null;
         var previousIcon = _trayBadgeIcon;
         _tray.Icon = icon ?? _trayBaseIcon;
@@ -417,7 +456,7 @@ public partial class MainWindow : Window
                         previousJunkCursor, (provider as ImapSmtpProvider)?.CurrentJunkCursor);
                     if (validity is not null && cursor?.UidValidity is not null && validity != cursor.UidValidity)
                         await _store.ResetFolderAsync(account.Id, "INBOX");
-                    await _store.UpsertMessagesAsync(messageList);
+                    await Task.Run(() => _store.UpsertMessagesAsync(messageList));
                     if (provider is ImapSmtpProvider imap)
                     {
                         await _store.RemoveMissingMessagesAsync(account.Id, "INBOX", imap.CurrentMessageIdSet, DateTimeOffset.UtcNow.AddDays(-90));
@@ -544,16 +583,25 @@ public partial class MainWindow : Window
     private void UpdateNavigationSelection()
     {
         AllInboxButton.Background = _selectedAccount is null && !_starredOnly
-            ? (System.Windows.Media.Brush)FindResource("SelectedBrush")
+            ? (System.Windows.Media.Brush)FindResource("SidebarSelectedBrush")
             : System.Windows.Media.Brushes.Transparent;
         FavoritesButton.Background = _starredOnly
-            ? (System.Windows.Media.Brush)FindResource("SelectedBrush")
+            ? (System.Windows.Media.Brush)FindResource("SidebarSelectedBrush")
             : System.Windows.Media.Brushes.Transparent;
     }
 
     private async void OnMessageSelected(object sender, SelectionChangedEventArgs e)
     {
+        PlainBodyScroll.ScrollToTop();
         _lastSelectedText = "";
+        _translationViewRevision++;
+        _displayedTranslation = null;
+        _needsTranslationStyleUpdate = false;
+        TranslateButton.Content = "翻译";
+        TranslateButton.IsEnabled = false;
+        CopyReaderCodeButton.Visibility = Visibility.Collapsed;
+        _readerVerificationCode = null;
+        _bodyPrefetchRevision++;
         _bodyLoadCancellation?.Cancel();
         RemoteImagesButton.Visibility = Visibility.Collapsed;
         _viewModel.IsBodyLoading = false;
@@ -563,8 +611,10 @@ public partial class MainWindow : Window
             PlainBody.Visibility = Visibility.Visible;
             _viewModel.ShowMessage(null);
             ReadButton.IsEnabled = StarButton.IsEnabled = false;
+            ScheduleBodyPrefetch();
             return;
         }
+        var timing = new MailBodyTiming();
         if (_viewModel.IsListVisible) _listScrollOffset = FindMessageScrollViewer(MessageList)?.VerticalOffset ?? 0;
         _viewModel.ShowMessage(row.Message);
         ReadButton.IsEnabled = StarButton.IsEnabled = true;
@@ -573,46 +623,62 @@ public partial class MainWindow : Window
         _allowRemoteImages = _viewModel.AutoLoadRemoteImages;
         using var bodyLoadCancellation = new CancellationTokenSource();
         _bodyLoadCancellation = bodyLoadCancellation;
-        _viewModel.IsBodyLoading = !row.HasCachedBody;
-        if (!row.HasCachedBody)
+        timing.StartStage("check_body_cache");
+        var needsBody = !row.HasCachedBody;
+        timing.StartStage("prepare_body_view");
+        _viewModel.IsBodyLoading = needsBody;
+        if (needsBody)
         {
             HtmlBody.Visibility = Visibility.Hidden;
             PlainBody.Visibility = Visibility.Hidden;
         }
         var account = _viewModel.Accounts.FirstOrDefault(item => item.Id == row.Message.AccountId);
         string? secret = null;
+        var outcome = "not_displayed";
+        var timingRecorded = false;
+        void RecordTiming(string result)
+        {
+            timingRecorded = true;
+            var details = timing.Finish(account?.Provider.ToString() ?? "Unknown", !needsBody, result);
+            _ = Task.Run(() => _mailBodyLog.TryAppend("正文加载", "邮件正文阶段耗时", details));
+        }
         try
         {
-            if (!row.HasCachedBody)
+            _ = ChangeMessageFlagAsync(row, readFlag: true, desiredValue: true);
+            if (needsBody)
             {
                 if (account is null || !_providerMap.TryGetValue(account.Provider, out var provider))
                 {
                     _viewModel.StatusText = "此账号尚未完成授权，暂时无法加载正文";
                     return;
                 }
+                timing.StartStage("read_local_credential");
                 secret = _vault.Read(account.Id);
                 if (secret is null)
                 {
                     _viewModel.StatusText = "此账号需要更新授权，暂时无法加载正文";
                     return;
                 }
-                var fullMessage = await provider.GetMessageAsync(account, secret, row.Message.ServerId, bodyLoadCancellation.Token);
+                timing.StartStage("prepare_provider_request");
+                var fullMessage = await LoadMessageBodyAsync(account, provider, secret, row.Message,
+                    MailBodySource.Reader, bodyLoadCancellation.Token, timing.StartStage);
                 bodyLoadCancellation.Token.ThrowIfCancellationRequested();
-                row.CacheBody(fullMessage);
-                await _store.UpsertMessagesAsync([row.Message], bodyLoadCancellation.Token);
+                timing.StartStage("apply_body_to_reader");
+                if (!row.HasCachedBody) row.CacheBody(fullMessage);
             }
             if (bodyLoadCancellation.IsCancellationRequested || !ReferenceEquals(MessageList.SelectedItem, row)) return;
             _viewModel.ShowMessage(row.Message);
-            await ShowBodyAsync(row.Message, bodyLoadCancellation.Token);
-            if (!bodyLoadCancellation.IsCancellationRequested && ReferenceEquals(MessageList.SelectedItem, row))
-            {
-                _viewModel.IsBodyLoading = false;
-                await ChangeMessageFlagAsync(row, readFlag: true, desiredValue: true);
-            }
+            await ShowBodyAsync(row.Message, bodyLoadCancellation.Token, timing: timing);
+            if (bodyLoadCancellation.IsCancellationRequested || !ReferenceEquals(MessageList.SelectedItem, row)) return;
+            _viewModel.IsBodyLoading = false;
+            RecordTiming("displayed");
+            await Task.WhenAll(UpdateTranslationAvailabilityAsync(row, bodyLoadCancellation.Token),
+                UpdateReaderVerificationCodeAsync(row, bodyLoadCancellation.Token));
         }
         catch (OperationCanceledException) when (bodyLoadCancellation.IsCancellationRequested) { }
         catch (Exception error)
         {
+            outcome = error.GetType().Name;
             if (!bodyLoadCancellation.IsCancellationRequested && ReferenceEquals(MessageList.SelectedItem, row))
             {
                 var failure = SyncFailure.Describe(error, account?.Provider ?? ProviderKind.GmailImap, "加载邮件正文", secret);
@@ -623,13 +689,29 @@ public partial class MainWindow : Window
         }
         finally
         {
+            if (!timingRecorded) RecordTiming(bodyLoadCancellation.IsCancellationRequested ? "cancelled" : outcome);
             if (ReferenceEquals(_bodyLoadCancellation, bodyLoadCancellation))
             {
                 _bodyLoadCancellation = null;
                 _viewModel.IsBodyLoading = false;
                 if (HtmlBody.Visibility != Visibility.Visible) PlainBody.Visibility = Visibility.Visible;
+                ScheduleBodyPrefetch();
             }
         }
+    }
+
+    private async Task SaveBodyCacheAsync(MailMessage message)
+    {
+        await _bodyCacheWriteLock.WaitAsync();
+        try
+        {
+            if (!_exiting) await Task.Run(() => _store.CacheMessageBodyAsync(message));
+        }
+        catch (Exception error)
+        {
+            if (!_exiting) Notify("邮件正文未能写入本地缓存：" + error.GetType().Name, "告警");
+        }
+        finally { _bodyCacheWriteLock.Release(); }
     }
 
     private static ScrollViewer? FindMessageScrollViewer(DependencyObject parent)
@@ -656,12 +738,16 @@ public partial class MainWindow : Window
 
     private void OnPreviousMessage(object sender, RoutedEventArgs e)
     {
-        if (_viewModel.AdjacentMessage(-1) is MessageRow row) MessageList.SelectedItem = row;
+        if (_viewModel.AdjacentMessage(-1) is not MessageRow row) return;
+        MessageList.SelectedItem = row;
+        MessageList.ScrollIntoView(row);
     }
 
     private void OnNextMessage(object sender, RoutedEventArgs e)
     {
-        if (_viewModel.AdjacentMessage(1) is MessageRow row) MessageList.SelectedItem = row;
+        if (_viewModel.AdjacentMessage(1) is not MessageRow row) return;
+        MessageList.SelectedItem = row;
+        MessageList.ScrollIntoView(row);
     }
 
     private async Task ChangeMessageFlagAsync(MessageRow row, bool readFlag, bool? desiredValue = null)
@@ -670,6 +756,9 @@ public partial class MainWindow : Window
         await _flagWriteLock.WaitAsync();
         try
         {
+            if (_exiting) return;
+            var messageKey = row.Message.Key;
+            row = _viewModel.Messages.FirstOrDefault(item => item.Message.Key == messageKey) ?? row;
             var old = row.Message;
             var value = desiredValue ?? (readFlag ? !old.IsRead : !old.IsStarred);
             if ((readFlag ? old.IsRead : old.IsStarred) == value) return;
@@ -677,14 +766,8 @@ public partial class MainWindow : Window
             var kind = readFlag ? (value ? PendingActionKind.MarkRead : PendingActionKind.MarkUnread)
                 : (value ? PendingActionKind.Star : PendingActionKind.Unstar);
             row.UpdateFlags(updated.IsRead, updated.IsStarred);
-            try
-            {
-                await Task.Run(async () =>
-                {
-                    await _store.UpsertMessagesAsync([updated]);
-                    await _store.EnqueueAsync(new PendingAction(Guid.NewGuid(), old.AccountId, old.ServerId, kind, DateTimeOffset.UtcNow));
-                });
-            }
+            var action = new PendingAction(Guid.NewGuid(), old.AccountId, old.ServerId, kind, DateTimeOffset.UtcNow);
+            try { await Task.Run(() => _store.SaveMessageFlagAsync(action)); }
             catch
             {
                 row.UpdateFlags(old.IsRead, old.IsStarred);
@@ -699,7 +782,6 @@ public partial class MainWindow : Window
                 UpdateSyncProblem();
             }
             _viewModel.RefreshMailCounts();
-            if (readFlag) await UpdateTrayUnreadCountAsync();
             if (ReferenceEquals(MessageList.SelectedItem, row))
             {
                 ReadButton.Content = row.Message.IsRead ? "标为未读" : "标为已读";
@@ -708,9 +790,22 @@ public partial class MainWindow : Window
             if (!readFlag) Notify(updated.IsStarred ? "已添加星标" : "已取消星标", "成功");
         }
         finally { _flagWriteLock.Release(); }
+        _ = SyncMessageFlagAsync(updated.AccountId);
+        if (readFlag)
+        {
+            try { await UpdateTrayUnreadCountAsync(); }
+            catch (Exception error)
+            {
+                if (!_exiting) Notify("未能刷新托盘未读计数：" + error.GetType().Name, "告警");
+            }
+        }
+    }
+
+    private async Task SyncMessageFlagAsync(Guid accountId)
+    {
         try
         {
-            var account = _viewModel.Accounts.FirstOrDefault(item => item.Id == updated.AccountId);
+            var account = _viewModel.Accounts.FirstOrDefault(item => item.Id == accountId);
             if (account is null || !_providerMap.TryGetValue(account.Provider, out var provider)) return;
             var secret = _vault.Read(account.Id);
             if (secret is null) { Notify("邮件状态已保存在本机，更新授权后同步", "告警"); return; }
@@ -724,7 +819,14 @@ public partial class MainWindow : Window
         await _pendingWriteLock.WaitAsync();
         try
         {
-            foreach (var action in await _store.GetPendingAsync(account.Id))
+            var actionList = await _store.GetPendingAsync(account.Id);
+            if (provider is ImapSmtpProvider imap && actionList.Count > 0)
+            {
+                await imap.ApplyPendingFlagsAsync(account, secret, actionList,
+                    actionId => _store.CompletePendingAsync(actionId), CancellationToken.None);
+                return;
+            }
+            foreach (var action in actionList)
             {
                 var read = action.Kind switch
                 {
@@ -814,25 +916,31 @@ public partial class MainWindow : Window
         finally { _viewModel.IsDownloadingAttachments = false; }
     }
 
-    private async Task ShowBodyAsync(MailMessage message, CancellationToken cancellationToken = default)
+    private async Task ShowBodyAsync(MailMessage message, CancellationToken cancellationToken = default,
+        MailTranslation? translation = null, MailBodyTiming? timing = null)
     {
+        if (!ReferenceEquals(translation, _displayedTranslation)) return;
         if (cancellationToken.IsCancellationRequested || MessageList.SelectedItem is not MessageRow active || active.Message.Key != message.Key) return;
         RemoteImagesButton.Visibility = !_allowRemoteImages && !string.IsNullOrWhiteSpace(message.HtmlBody)
             ? Visibility.Visible : Visibility.Collapsed;
         if (string.IsNullOrWhiteSpace(message.HtmlBody))
         {
+            timing?.StartStage("show_plain_text");
             HtmlBody.Visibility = Visibility.Collapsed;
             PlainBody.Visibility = Visibility.Visible;
             return;
         }
         try
         {
+            timing?.StartStage("webview_environment");
             _webEnvironmentTask ??= CoreWebView2Environment.CreateAsync(
                 userDataFolder: System.IO.Path.Combine(_dataDirectory, "WebView2"));
             var environment = await _webEnvironmentTask.WaitAsync(cancellationToken);
+            timing?.StartStage("webview_initialize_control");
             await HtmlBody.EnsureCoreWebView2Async(environment);
             HtmlBody.ZoomFactor = _readerSettings.FontScalePercent / 100d;
-            if (cancellationToken.IsCancellationRequested || MessageList.SelectedItem is not MessageRow selected || selected.Message.Key != message.Key) return;
+            if (!ReferenceEquals(translation, _displayedTranslation) || cancellationToken.IsCancellationRequested ||
+                MessageList.SelectedItem is not MessageRow selected || selected.Message.Key != message.Key) return;
             var web = HtmlBody.CoreWebView2;
             if (_htmlRenderer is null)
             {
@@ -848,16 +956,20 @@ public partial class MainWindow : Window
                 web.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
                 _htmlRenderer = new HtmlMessageRenderer(web);
             }
-            if (!await _htmlRenderer.ShowAsync(message.HtmlBody, _allowRemoteImages, cancellationToken)) return;
-            if (cancellationToken.IsCancellationRequested || MessageList.SelectedItem is not MessageRow current || current.Message.Key != message.Key) return;
+            if (!await _htmlRenderer.ShowAsync(message.HtmlBody, _allowRemoteImages, cancellationToken,
+                translation?.HtmlTextList, timing is null ? null : timing.StartStage)) return;
+            if (!ReferenceEquals(translation, _displayedTranslation) || cancellationToken.IsCancellationRequested ||
+                MessageList.SelectedItem is not MessageRow current || current.Message.Key != message.Key) return;
             PlainBody.Visibility = Visibility.Collapsed;
             HtmlBody.Visibility = Visibility.Visible;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch
         {
+            timing?.StartStage("fallback_plain_text");
             if (_webEnvironmentTask?.IsFaulted == true) _webEnvironmentTask = null;
-            if (cancellationToken.IsCancellationRequested || MessageList.SelectedItem is not MessageRow current || current.Message.Key != message.Key) return;
+            if (!ReferenceEquals(translation, _displayedTranslation) || cancellationToken.IsCancellationRequested ||
+                MessageList.SelectedItem is not MessageRow current || current.Message.Key != message.Key) return;
             HtmlBody.Visibility = Visibility.Collapsed;
             PlainBody.Visibility = Visibility.Visible;
             _viewModel.StatusText = "HTML 阅读组件不可用，显示纯文本摘要";
@@ -980,7 +1092,11 @@ public partial class MainWindow : Window
         if (settings.AutoCopySelectedText) _selectionCopyTimer.Start();
         else _selectionCopyTimer.Stop();
         _mailProxy.Settings = settings.Proxy;
-        if (proxyChanged && _listenersStarted) ReconcileInboxListeners();
+        if (proxyChanged)
+        {
+            foreach (var provider in _providerMap.Values.OfType<ImapSmtpProvider>()) _ = provider.CloseBodySessionsAsync();
+            if (_listenersStarted) ReconcileInboxListeners();
+        }
         _viewModel.AutoLoadRemoteImages = settings.AutoLoadRemoteImages;
         _viewModel.DownloadDirectory = settings.DownloadDirectory;
         App.ApplyFontScale(settings.FontScalePercent);
@@ -1038,12 +1154,11 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task ReloadSelectedBodyAsync()
+    private Task ReloadSelectedBodyAsync()
     {
-        if (MessageList.SelectedItem is not MessageRow row) return;
-        var cached = (await _store.GetMessagesAsync(row.Message.AccountId, "INBOX", null, 1000))
-            .FirstOrDefault(item => item.ServerId == row.Message.ServerId);
-        await ShowBodyAsync(cached ?? row.Message);
+        return MessageList.SelectedItem is MessageRow row && !_viewModel.IsBodyLoading
+            ? ShowBodyAsync(row.Message, translation: _displayedTranslation)
+            : Task.CompletedTask;
     }
 
     private async void OnAddAccount(object sender, RoutedEventArgs e)
@@ -1085,6 +1200,8 @@ public partial class MainWindow : Window
             _inboxChangeAccountSet.Remove(account.Id);
             _inboxRecoveryAccountSet.Remove(account.Id);
             _vault.Delete(account.Id);
+            if (_providerMap.GetValueOrDefault(account.Provider) is ImapSmtpProvider imap)
+                await imap.CloseBodySessionsAsync(account.Id);
             await _store.RemoveAccountAsync(account.Id);
             _desktopNotifications.RemoveAccount(account.Id);
             try { await Task.Run(() => InlineImages.DeleteAccount(account.Id, InlineImages.CacheDirectory)); }
@@ -1170,6 +1287,8 @@ public partial class MainWindow : Window
         }
         foreach (var key in _inboxListenerMap.Keys.Where(key => key.AccountId == account.Id).ToArray()) StopInboxListener(key);
         _vault.Save(account.Id, secret);
+        if (_providerMap.GetValueOrDefault(account.Provider) is ImapSmtpProvider imap)
+            await imap.CloseBodySessionsAsync(account.Id);
         await _store.UpsertAccountAsync(account with { Status = ConnectionStatus.Online, LastError = null });
         await LoadAccountsAsync();
         await SyncAllAsync(force: true, accountId: account.Id);
@@ -1205,7 +1324,11 @@ public partial class MainWindow : Window
         _pollTimer.Stop();
         _searchTimer.Stop();
         _bodyLoadCancellation?.Cancel();
+        _bodyPrefetchTimer.Stop();
+        _bodyPrefetchCancellation?.Cancel();
+        _translator.Dispose();
         _desktopNotifications.Dispose();
+        foreach (var provider in _providerMap.Values.OfType<ImapSmtpProvider>()) _ = provider.CloseBodySessionsAsync();
         _tray.Visible = false;
         _noticePopupCloseTimer.Stop();
         NoticeHistoryPopup.IsOpen = false;
