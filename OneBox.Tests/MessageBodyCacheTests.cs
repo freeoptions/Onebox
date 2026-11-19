@@ -24,7 +24,7 @@ public sealed class MessageBodyCacheTests
             await store.UpsertMessagesAsync([message]);
             var row = new MessageRow(message, account.Address);
             Assert.IsFalse(row.HasCachedBody);
-            row.CacheBody(message with { TextBody = "完整正文", IsRead = false, IsStarred = false });
+            row.CacheBody(message with { TextBody = "完整正文", HasAttachments = true, IsRead = false, IsStarred = false });
             Assert.IsTrue(row.HasCachedBody);
             Assert.AreEqual("完整正文", row.Message.TextBody);
             Assert.IsTrue(row.Message.IsRead);
@@ -34,6 +34,7 @@ public sealed class MessageBodyCacheTests
             var reloadedRow = new MessageRow((await store.GetMessagesAsync(account.Id, "INBOX", null)).Single(), account.Address);
             Assert.IsTrue(reloadedRow.HasCachedBody);
             Assert.AreEqual("完整正文", reloadedRow.Message.TextBody);
+            Assert.IsTrue(reloadedRow.HasAttachments);
         }
         finally
         {

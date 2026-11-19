@@ -20,7 +20,7 @@ public sealed class InlineImageTests
         var png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=");
         try
         {
-            var builder = new BodyBuilder { HtmlBody = "<p>nihao<img src=\"cid:picture%40onebox\"></p><img src=\"https://example.test/remote.png\">" };
+            var builder = new BodyBuilder { HtmlBody = "<p>nihao<img src=\"cid:picture%40onebox\"></p><img src=\"https://example.test/remote.png\"><img src=\"cid:missing\">" };
             var linkedImage = builder.LinkedResources.Add("picture.png", png);
             linkedImage.ContentId = "picture@onebox";
             builder.Attachments.Add("report.txt", Encoding.UTF8.GetBytes("附件内容"));
@@ -35,7 +35,7 @@ public sealed class InlineImageTests
             Assert.IsFalse(InlineImages.HasUnresolvedReferences(html));
             StringAssert.Contains(html, "https://example.test/remote.png");
             var url = Regex.Match(html, @"https://onebox-inline\.invalid/[^""<>]+").Value;
-            var imageList = InlineImages.GetImageList(html + html);
+            var imageList = InlineImages.GetImageList(html + html, accountId, "42", directory);
             Assert.AreEqual(1, imageList.Count);
             Assert.AreEqual(url, imageList[0].AbsoluteUri);
             using var image = InlineImages.Open(new Uri(url), accountId, "42", directory, out var contentType);
@@ -69,6 +69,7 @@ public sealed class InlineImageTests
             Assert.AreEqual("附件内容", await File.ReadAllTextAsync(attachmentPath));
             InlineImages.DeleteAccount(accountId, directory);
             Assert.IsNull(InlineImages.Open(new Uri(url), accountId, "42", directory, out _));
+            Assert.IsEmpty(InlineImages.GetImageList(html, accountId, "42", directory));
             await Assert.ThrowsAsync<IOException>(() => MimeAttachments.SaveAsync(parsed.Attachments.Single(), attachmentPath, CancellationToken.None));
             Assert.AreEqual("附件内容", await File.ReadAllTextAsync(attachmentPath));
         }

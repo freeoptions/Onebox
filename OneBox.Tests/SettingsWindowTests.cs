@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using System.Windows.Markup;
 using System.Windows.Threading;
 using System.Xml.Linq;
@@ -135,6 +136,14 @@ public sealed class SettingsWindowTests
                         });
                     try
                     {
+                        var accountAddress = (System.Windows.Documents.Run)notificationWindow.FindName("AccountAddressRun");
+                        Assert.AreEqual(notificationAccount.Address, accountAddress.Text);
+                        Assert.AreEqual(FontWeights.SemiBold, accountAddress.FontWeight);
+                        Assert.AreSame(application.Resources["AccentBrush"], accountAddress.Foreground);
+                        var receivedAt = (TextBlock)notificationWindow.FindName("ReceivedAtText");
+                        var localTime = notificationMessage.ReceivedAt.LocalDateTime;
+                        var format = localTime.Date == DateTime.Today ? "'今天' HH:mm:ss" : "yyyy-MM-dd HH:mm:ss";
+                        Assert.AreEqual(localTime.ToString(format, System.Globalization.CultureInfo.InvariantCulture), receivedAt.Text);
                         Assert.AreEqual(SizeToContent.Height, notificationWindow.SizeToContent, "通知高度应随内容收紧");
                         Assert.IsFalse(notificationWindow.ShowActivated);
                         Assert.IsFalse(notificationWindow.ShowInTaskbar);
@@ -199,6 +208,21 @@ public sealed class SettingsWindowTests
                     {
                         Assert.IsTrue(sawFade, "自动到期仍应播放慢淡出");
                         Assert.IsFalse(autoClosed, "慢淡出的中间帧不应提前关闭");
+                        autoWindow.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount) { RoutedEvent = UIElement.MouseEnterEvent });
+                        Assert.AreEqual(1d, autoWindow.Opacity, "移入正在淡出的通知时应立即完全显示");
+                        Assert.IsFalse(autoWindow.HasAnimatedProperties, "悬停期间应取消淡出动画");
+
+                        var hoverFrame = new DispatcherFrame();
+                        var hoverTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(4100) };
+                        hoverTimer.Tick += (_, _) => hoverFrame.Continue = false;
+                        hoverTimer.Start();
+                        try { Dispatcher.PushFrame(hoverFrame); }
+                        finally { hoverTimer.Stop(); }
+                        Assert.IsFalse(autoClosed, "悬停超过原淡出时长也应保持通知");
+                        Assert.AreEqual(1d, autoWindow.Opacity);
+
+                        autoWindow.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount) { RoutedEvent = UIElement.MouseLeaveEvent });
+                        Assert.IsTrue(autoWindow.HasAnimatedProperties, "移出时应立即开始淡出");
                         ((Button)autoWindow.FindName("OpenButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                         Assert.IsTrue(autoClosed, "点击应立即打断自动淡出并关闭");
                         Assert.AreEqual(1, autoOpenCount);
@@ -210,6 +234,7 @@ public sealed class SettingsWindowTests
                 var verificationMessage = notificationMessage with
                 {
                     Subject = "服务邮箱验证邮件",
+                    ReceivedAt = new DateTimeOffset(2025, 9, 8, 7, 6, 5, TimeZoneInfo.Local.GetUtcOffset(new DateTime(2025, 9, 8, 7, 6, 5))),
                     Preview = ""
                 };
                 Assert.IsTrue(MailVerificationCode.IsLikelyVerificationMail(verificationMessage));
@@ -217,6 +242,7 @@ public sealed class SettingsWindowTests
                     notificationSettings with { ShowContent = true, DurationSeconds = 2 }, () => { });
                 try
                 {
+                    Assert.AreEqual("2025-09-08 07:06:05", ((TextBlock)verificationWindow.FindName("ReceivedAtText")).Text);
                     var status = (TextBlock)verificationWindow.FindName("VerificationStatusText");
                     var copyButton = (Button)verificationWindow.FindName("CopyCodeButton");
                     var verificationClosed = false;

@@ -21,6 +21,7 @@ public partial class MainWindow : Window
     private readonly string _dataDirectory;
     private readonly string _readerSettingsPath;
     private readonly string _syncSchedulePath;
+    private readonly LayoutSettings _layoutSettings;
     private readonly DiagnosticLog _listenerLog;
     private readonly DiagnosticLog _mailBodyLog;
     private bool _listenerLogWriteWarning;
@@ -75,6 +76,10 @@ public partial class MainWindow : Window
         _dataDirectory = AppContext.BaseDirectory;
         _readerSettingsPath = System.IO.Path.Combine(_dataDirectory, "reader-settings.json");
         _syncSchedulePath = System.IO.Path.Combine(_dataDirectory, "sync-schedule.json");
+        _layoutSettings = new LayoutSettings(System.IO.Path.Combine(_dataDirectory, "layout-settings.json"));
+        _layoutSettings.TrackPanes(MailPanes);
+        _layoutSettings.TrackWindow(this, LayoutSettings.WindowKind.Main);
+        Closing += OnClosing;
         _listenerLog = new DiagnosticLog(System.IO.Path.Combine(_dataDirectory, "logs"));
         _mailBodyLog = new DiagnosticLog(System.IO.Path.Combine(_dataDirectory, "logs"), "mail-body");
         _store = new SqliteMailStore(System.IO.Path.Combine(_dataDirectory, "mail.db"));
@@ -384,7 +389,7 @@ public partial class MainWindow : Window
             if (_exiting || revision != _messageListLoadRevision || accountId != _selectedAccount ||
                 starredOnly != _starredOnly || searchText != _viewModel.SearchText) return;
             var selectedKey = (MessageList.SelectedItem as MessageRow)?.Message.Key;
-            _viewModel.ShowMessages(messageList);
+            _viewModel.ShowMessages(messageList, showAccount: accountId is null && !starredOnly);
             if (selectedKey is not null)
                 MessageList.SelectedItem = _viewModel.Messages.FirstOrDefault(row => row.Message.Key == selectedKey);
             _viewModel.CurrentFolderTitle = _starredOnly ? "收藏夹" : _selectedAccount is Guid id
@@ -880,7 +885,7 @@ public partial class MainWindow : Window
 
     private async void OnDownloadAttachments(object sender, RoutedEventArgs e)
     {
-        if (_viewModel.IsDownloadingAttachments || MessageList.SelectedItem is not MessageRow row) return;
+        if (_viewModel.IsDownloadingAttachments || MessageList.SelectedItem is not MessageRow row || !row.HasAttachments) return;
         var account = _viewModel.Accounts.FirstOrDefault(item => item.Id == row.Message.AccountId);
         if (account is null || !_providerMap.TryGetValue(account.Provider, out var provider)) return;
         var secret = _vault.Read(account.Id);
@@ -890,11 +895,6 @@ public partial class MainWindow : Window
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         try
         {
-            if (!row.HasAttachments)
-            {
-                Notify("这封邮件没有附件；正文图片请使用“保存内嵌图片”", "告警");
-                return;
-            }
             var attachmentList = await provider.GetAttachmentsAsync(account, secret, row.Message.ServerId, timeout.Token);
             timeout.CancelAfter(Timeout.InfiniteTimeSpan);
             if (attachmentList.Count == 0) { Notify("这封邮件没有可下载的附件；正文图片请使用“保存内嵌图片”", "告警"); return; }
@@ -1013,12 +1013,8 @@ public partial class MainWindow : Window
     private async void OnSaveInlineImages(object sender, RoutedEventArgs e)
     {
         if (MessageList.SelectedItem is not MessageRow row) return;
-        var imageList = InlineImages.GetImageList(row.Message.HtmlBody);
-        if (imageList.Count == 0)
-        {
-            Notify("这封邮件没有可保存的内嵌图片", "告警");
-            return;
-        }
+        var imageList = _viewModel.SelectedInlineImageList;
+        if (imageList.Count == 0) return;
         if (imageList.Count == 1)
         {
             await SaveInlineImageAsync(imageList[0], row.Message.AccountId, row.Message.ServerId);
@@ -1121,6 +1117,7 @@ public partial class MainWindow : Window
     private void OnOpenSettings(object sender, RoutedEventArgs e)
     {
         var window = new SettingsWindow(_readerSettings, _readerSettingsPath) { Owner = this };
+        _layoutSettings.TrackWindow(window, LayoutSettings.WindowKind.Settings);
         window.SettingsChanged += async (_, _) =>
         {
             var reloadBody = _readerSettings.AutoLoadRemoteImages != window.Settings.AutoLoadRemoteImages;
@@ -1313,6 +1310,7 @@ public partial class MainWindow : Window
     {
         if (_viewModel.Accounts.Count == 0) { MessageBox.Show(this, "请先添加邮箱账号", "OneBox"); return; }
         var dialog = new ComposeDialog(_viewModel.Accounts.ToArray(), _selectedAccount) { Owner = this };
+        _layoutSettings.TrackWindow(dialog, LayoutSettings.WindowKind.Compose);
         if (dialog.ShowDialog() != true) return;
         var outgoing = dialog.Message!;
         var account = _viewModel.Accounts.First(item => item.Id == outgoing.AccountId);

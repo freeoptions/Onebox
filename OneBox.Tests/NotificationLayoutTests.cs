@@ -38,7 +38,8 @@ public sealed class NotificationLayoutTests
                 var grid = (Grid)XamlReader.Parse(wrapper.ToString());
                 grid.Width = 368;
                 TextElement.SetFontSize(grid, 13);
-                ((TextBlock)grid.FindName("AccountText")).Text = "OneBox · example@gmail.com";
+                ((Run)grid.FindName("AccountAddressRun")).Text = "example@gmail.com";
+                ((TextBlock)grid.FindName("ReceivedAtText")).Text = "2026-11-18 09:10:11";
                 ((TextBlock)grid.FindName("SenderText")).Text = "邮箱验证";
                 ((TextBlock)grid.FindName("SubjectText")).Text = "你的邮箱验证码";
                 ((TextBlock)grid.FindName("PreviewText")).Text = "请使用下面的验证码完成验证。";

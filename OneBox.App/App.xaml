@@ -42,7 +42,16 @@
       <Geometry x:Key="PencilGlyph">M3,21 L5,14 L16,3 Q18,1 21,4 Q23,6 21,8 L10,19 Z M14,5 L19,10 M5,14 L10,19</Geometry>
       <Geometry x:Key="InboxGlyph">M2,13 L5,4 H19 L22,13 V20 H2 Z M2,13 H8 L9,16 H15 L16,13 H22</Geometry>
       <Geometry x:Key="StarGlyph">M12,2 L15,8.5 L22,9.5 L17,14.5 L18,22 L12,18.5 L6,22 L7,14.5 L2,9.5 L9,8.5 Z</Geometry>
-      <Geometry x:Key="MailGlyph">M2,5 H22 V19 H2 Z M2,6 L12,14 L22,6</Geometry>
+      <DrawingImage x:Key="GenericMailIcon">
+        <DrawingImage.Drawing>
+          <GeometryDrawing Geometry="M2,5 H22 V19 H2 Z M2,6 L12,14 L22,6">
+            <GeometryDrawing.Pen><Pen Brush="{StaticResource InkBrush}" Thickness="2"/></GeometryDrawing.Pen>
+          </GeometryDrawing>
+        </DrawingImage.Drawing>
+      </DrawingImage>
+      <BitmapImage x:Key="QqMailIcon" UriSource="pack://application:,,,/OneBox;component/Assets/mail-qq.png"/>
+      <BitmapImage x:Key="NetEaseMailIcon" UriSource="pack://application:,,,/OneBox;component/Assets/mail-netease.png"/>
+      <BitmapImage x:Key="GmailIcon" UriSource="pack://application:,,,/OneBox;component/Assets/mail-gmail.png"/>
       <Geometry x:Key="RefreshGlyph">M21,9 A9,9 0 0 0 4,7 M21,3 V9 H15 M3,15 A9,9 0 0 0 20,17 M3,21 V15 H9</Geometry>
       <Geometry x:Key="DownloadGlyph">M12,2 V15 M7,10 L12,15 L17,10 M3,16 V21 H21 V16</Geometry>
       <Style x:Key="OutlineGlyph" TargetType="Path">

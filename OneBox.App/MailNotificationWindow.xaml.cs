@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
@@ -14,7 +15,8 @@ public partial class MailNotificationWindow : Window
     private readonly TaskCompletionSource _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Action _open;
     private bool _dismissing;
-    private bool _autoFading;
+    private DoubleAnimation? _fadeAnimation;
+    private bool _resumeFadeOnMouseLeave;
     private bool _checkingVerificationCode;
     private string? _verificationCode;
     private Func<Task>? _markRead;
@@ -23,26 +25,43 @@ public partial class MailNotificationWindow : Window
     {
         InitializeComponent();
         _open = open;
-        AccountText.Text = $"OneBox · {account.Address}";
+        AccountAddressRun.Text = account.Address;
+        if (message.ReceivedAt == DateTimeOffset.MinValue)
+        {
+            ReceivedAtText.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            var receivedAt = message.ReceivedAt.LocalDateTime;
+            var format = receivedAt.Date == DateTime.Today ? "'今天' HH:mm:ss" : "yyyy-MM-dd HH:mm:ss";
+            ReceivedAtText.Text = receivedAt.ToString(format, CultureInfo.InvariantCulture);
+        }
         SenderText.Text = settings.ShowContent ? new MessageRow(message, account.Address).FromName : "收到新邮件";
         SubjectText.Text = settings.ShowContent ? (string.IsNullOrWhiteSpace(message.Subject) ? "（无主题）" : message.Subject) : "点击查看邮件";
         PreviewText.Text = settings.ShowContent ? new MessageRow(message, account.Address).Preview : "";
         PreviewText.Visibility = string.IsNullOrWhiteSpace(PreviewText.Text) ? Visibility.Collapsed : Visibility.Visible;
         OpenButton.SetValue(System.Windows.Automation.AutomationProperties.NameProperty,
-            $"{AccountText.Text}，{SenderText.Text}，{SubjectText.Text}");
+            $"OneBox · {account.Address}，{SenderText.Text}，{SubjectText.Text}");
         _timer.Interval = TimeSpan.FromSeconds(Math.Clamp(settings.DurationSeconds, 2, 30));
         _timer.Tick += (_, _) => Dismiss(automatic: true);
         MouseEnter += (_, _) =>
         {
             _timer.Stop();
-            if (!_autoFading) return;
-            var opacity = Opacity;
+            if (_fadeAnimation is null) return;
+            _fadeAnimation = null;
             BeginAnimation(OpacityProperty, null);
-            _autoFading = false;
             _dismissing = false;
-            BeginAnimation(OpacityProperty, new DoubleAnimation(opacity, 1, TimeSpan.FromMilliseconds(120)));
+            _resumeFadeOnMouseLeave = true;
         };
-        MouseLeave += (_, _) => StartDismissTimer();
+        MouseLeave += (_, _) =>
+        {
+            if (_resumeFadeOnMouseLeave)
+            {
+                _resumeFadeOnMouseLeave = false;
+                Dismiss(automatic: true);
+            }
+            else StartDismissTimer();
+        };
         SourceInitialized += (_, _) =>
         {
             var handle = new WindowInteropHelper(this).Handle;
@@ -124,14 +143,14 @@ public partial class MailNotificationWindow : Window
 
     private void Dismiss(bool openMessage = false, bool automatic = false)
     {
-        if (_dismissing && (!_autoFading || automatic)) return;
+        if (_dismissing && (_fadeAnimation is null || automatic)) return;
         _dismissing = true;
-        _autoFading = automatic;
         // 慢淡出期间仍可悬停恢复和点击，主动关闭时立即停止交互。
         IsHitTestVisible = automatic;
         _timer.Stop();
         if (!automatic || !SystemParameters.ClientAreaAnimation)
         {
+            _fadeAnimation = null;
             BeginAnimation(OpacityProperty, null);
             Close();
         }
@@ -142,7 +161,12 @@ public partial class MailNotificationWindow : Window
                 // 参考视频约4秒：前段缓慢透出背景，后段逐渐加快，卡片保持原位。
                 EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
             };
-            animation.Completed += (_, _) => { if (!_closed.Task.IsCompleted) Close(); };
+            _fadeAnimation = animation;
+            animation.Completed += (_, _) =>
+            {
+                // 已取消的动画仍可能触发结束回调。
+                if (_fadeAnimation == animation && !_closed.Task.IsCompleted) Close();
+            };
             BeginAnimation(OpacityProperty, animation);
         }
         if (openMessage) _open();

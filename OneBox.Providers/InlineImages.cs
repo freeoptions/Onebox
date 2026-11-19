@@ -16,12 +16,17 @@ public static class InlineImages
 
     public static bool HasUnresolvedReferences(string? html) => html is not null && CidReference.IsMatch(html);
 
-    public static IReadOnlyList<Uri> GetImageList(string? html)
+    public static IReadOnlyList<Uri> GetImageList(string? html, Guid accountId, string messageId, string cacheDirectory)
     {
         if (string.IsNullOrEmpty(html)) return Array.Empty<Uri>();
         return Regex.Matches(html, $@"https://{Regex.Escape(Host)}/[^\s""'<>\)]+")
             .Select(match => Uri.TryCreate(WebUtility.HtmlDecode(match.Value), UriKind.Absolute, out var uri) ? uri : null)
-            .OfType<Uri>().Distinct().ToList();
+            .OfType<Uri>().Distinct()
+            .Where(uri =>
+            {
+                using var image = Open(uri, accountId, messageId, cacheDirectory, out _);
+                return image is not null;
+            }).ToList();
     }
 
     public static async Task<string?> ResolveAsync(MimeMessage mime, Guid accountId, string messageId,

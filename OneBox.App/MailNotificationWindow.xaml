@@ -31,8 +31,12 @@
             <Image Source="/Assets/onebox.png" Width="25" Height="25"/>
           </Border>
           <StackPanel Grid.Column="1" Margin="0,0,12,0">
-            <TextBlock x:Name="AccountText" Foreground="{StaticResource MutedBrush}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,0,0,6"/>
-            <TextBlock x:Name="SenderText" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+            <TextBlock Foreground="{StaticResource MutedBrush}" FontSize="11" TextTrimming="CharacterEllipsis"
+                       ToolTip="{Binding Text, ElementName=AccountAddressRun}">
+              <Run Text="OneBox · "/><Run x:Name="AccountAddressRun" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold"/>
+            </TextBlock>
+            <TextBlock x:Name="ReceivedAtText" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="0,2,0,0"/>
+            <TextBlock x:Name="SenderText" Margin="0,6,0,0" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
             <TextBlock x:Name="SubjectText" Margin="0,5,0,0" TextTrimming="CharacterEllipsis" Foreground="{StaticResource AccentBrush}"/>
             <TextBlock x:Name="PreviewText" Margin="0,4,0,0" FontSize="11" TextTrimming="CharacterEllipsis" Foreground="{StaticResource MutedBrush}"/>
             <TextBlock x:Name="VerificationStatusText" Margin="0,4,0,0" FontSize="11" Visibility="Collapsed"

@@ -4,7 +4,7 @@
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         Title="OneBox" Width="1420" Height="850" MinWidth="1000" MinHeight="640"
-        Style="{StaticResource AppWindow}" FontFamily="Segoe UI, Microsoft YaHei UI" WindowState="Maximized" Closing="OnClosing" Loaded="OnLoaded">
+        Style="{StaticResource AppWindow}" FontFamily="Segoe UI, Microsoft YaHei UI" WindowState="Maximized" Loaded="OnLoaded">
   <shell:WindowChrome.WindowChrome>
     <shell:WindowChrome CaptionHeight="58" GlassFrameThickness="0" ResizeBorderThickness="6" UseAeroCaptionButtons="False"/>
   </shell:WindowChrome.WindowChrome>
@@ -195,7 +195,7 @@
         </StackPanel>
       </Grid>
     </Border>
-    <Grid Grid.Row="2">
+    <Grid Grid.Row="2" x:Name="MailPanes">
       <Grid.ColumnDefinitions>
         <ColumnDefinition Width="17.5*" MinWidth="164" MaxWidth="340"/>
         <ColumnDefinition Width="28.7*" MinWidth="247"/>
@@ -252,7 +252,28 @@
             <ListBox.ItemTemplate><DataTemplate>
               <Grid Margin="9,7">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="26"/><ColumnDefinition Width="*"/><ColumnDefinition Width="24"/></Grid.ColumnDefinitions>
-                <Path Data="{StaticResource MailGlyph}" Style="{StaticResource OutlineGlyph}" Width="17" Height="17" HorizontalAlignment="Left"/>
+                <Image Width="18" Height="18" HorizontalAlignment="Left" VerticalAlignment="Center"
+                       RenderOptions.BitmapScalingMode="HighQuality">
+                  <Image.Style>
+                    <Style TargetType="Image">
+                      <Setter Property="Source" Value="{StaticResource GenericMailIcon}"/>
+                      <Style.Triggers>
+                        <DataTrigger Binding="{Binding Provider}" Value="{x:Static core:ProviderKind.Qq}">
+                          <Setter Property="Source" Value="{StaticResource QqMailIcon}"/>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding Provider}" Value="{x:Static core:ProviderKind.NetEase}">
+                          <Setter Property="Source" Value="{StaticResource NetEaseMailIcon}"/>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding Provider}" Value="{x:Static core:ProviderKind.Gmail}">
+                          <Setter Property="Source" Value="{StaticResource GmailIcon}"/>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding Provider}" Value="{x:Static core:ProviderKind.GmailImap}">
+                          <Setter Property="Source" Value="{StaticResource GmailIcon}"/>
+                        </DataTrigger>
+                      </Style.Triggers>
+                    </Style>
+                  </Image.Style>
+                </Image>
                 <StackPanel Grid.Column="1">
                   <TextBlock Text="{Binding Address}" FontSize="{DynamicResource FontSize12}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Address}"/>
                   <TextBlock Text="{Binding Status, Converter={StaticResource StatusTextConverter}}" FontSize="{DynamicResource FontSize10}" ToolTip="{Binding LastError}">
@@ -308,7 +329,7 @@
             <Grid Margin="40,12,11,12">
               <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
               <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-              <TextBlock Text="{Binding FromName}" Style="{StaticResource MailRowText}" TextTrimming="CharacterEllipsis"
+              <TextBlock Text="{Binding ListHeading}" Style="{StaticResource MailRowText}" TextTrimming="CharacterEllipsis"
                          ToolTip="{Binding AccountLabel}" Margin="0,0,8,0" VerticalAlignment="Center"/>
               <TextBlock Grid.Column="1" Text="{Binding ReceivedAtText}" ToolTip="{Binding ReceivedAt}"
                          Foreground="{StaticResource MutedBrush}" FontSize="{DynamicResource FontSize12}" HorizontalAlignment="Right" VerticalAlignment="Center"/>
@@ -437,7 +458,8 @@
                       </StackPanel>
                     </DataTemplate></Button.ContentTemplate>
                   </Button>
-                  <Button x:Name="SaveImagesButton" Content="保存内嵌图片" Click="OnSaveInlineImages" Style="{StaticResource ReaderAction}"/>
+                  <Button x:Name="SaveImagesButton" Content="保存内嵌图片" Click="OnSaveInlineImages"
+                          IsEnabled="{Binding CanSaveInlineImages}" Style="{StaticResource ReaderAction}"/>
                   <Button x:Name="RemoteImagesButton" Content="显示远程图片" Click="OnShowRemoteImages" Visibility="Collapsed" Style="{StaticResource ReaderPrimaryAction}"/>
                 </WrapPanel>
               </Border>

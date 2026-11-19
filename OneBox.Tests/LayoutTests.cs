@@ -1,6 +1,8 @@
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Shell;
 using System.Xml.Linq;
@@ -13,6 +15,119 @@ namespace OneBox.Tests;
 [TestClass]
 public sealed class LayoutTests
 {
+    [TestMethod]
+    public void SplitterWidthsAreRestoredInANewLayoutAndRespectMinimumWidths()
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            var directory = Path.Combine(Path.GetTempPath(), $"OneBox-layout-test-{Guid.NewGuid():N}");
+            try
+            {
+                Directory.CreateDirectory(directory);
+                var path = Path.Combine(directory, "layout-settings.json");
+                XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+                var window = XDocument.Load(Path.Combine(AppContext.BaseDirectory, "Ui", "MainWindow.xaml")).Root!;
+                var source = window.Descendants(presentation + "Grid").Single(grid => grid.Elements(presentation + "GridSplitter").Count() == 2);
+                Grid OpenLayout(double width)
+                {
+                    var grid = new Grid();
+                    foreach (var column in source.Element(presentation + "Grid.ColumnDefinitions")!.Elements())
+                        grid.ColumnDefinitions.Add((ColumnDefinition)XamlReader.Parse(column.ToString()));
+                    foreach (var element in source.Elements(presentation + "GridSplitter"))
+                    {
+                        var splitter = new XElement(element);
+                        splitter.Attribute("AutomationProperties.Name")?.Remove();
+                        grid.Children.Add((GridSplitter)XamlReader.Parse(splitter.ToString()));
+                    }
+                    new LayoutSettings(path).TrackPanes(grid);
+                    Arrange(grid, width);
+                    return grid;
+                }
+
+                static void Arrange(Grid grid, double width)
+                {
+                    grid.Measure(new Size(width, 640));
+                    grid.Arrange(new Rect(0, 0, width, 640));
+                    grid.UpdateLayout();
+                }
+
+                var beforeRestart = OpenLayout(1420);
+                var splitters = beforeRestart.Children.OfType<GridSplitter>().ToArray();
+                for (var index = 0; index < splitters.Length; index++)
+                {
+                    var splitter = splitters[index];
+                    var distance = index == 0 ? 28 : -60;
+                    splitter.RaiseEvent(new DragStartedEventArgs(0, 0) { RoutedEvent = Thumb.DragStartedEvent });
+                    splitter.RaiseEvent(new DragDeltaEventArgs(distance, 0) { RoutedEvent = Thumb.DragDeltaEvent });
+                    splitter.RaiseEvent(new DragCompletedEventArgs(distance, 0, false) { RoutedEvent = Thumb.DragCompletedEvent });
+                    Arrange(beforeRestart, 1420);
+                }
+                Assert.IsTrue(File.Exists(path), "调整后应立即保存布局");
+                var afterRestart = OpenLayout(1420);
+                for (var index = 0; index < beforeRestart.ColumnDefinitions.Count; index++)
+                    Assert.AreEqual(beforeRestart.ColumnDefinitions[index].ActualWidth, afterRestart.ColumnDefinitions[index].ActualWidth, 1);
+
+                var narrowerWindow = OpenLayout(1000);
+                foreach (var column in narrowerWindow.ColumnDefinitions)
+                    Assert.IsGreaterThanOrEqualTo(column.MinWidth - 0.5, column.ActualWidth);
+            }
+            catch (Exception error) { failure = error; }
+            finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.IsTrue(thread.Join(TimeSpan.FromSeconds(15)), "布局恢复检查超时");
+        if (failure is not null) Assert.Fail(failure.ToString());
+    }
+
+    [TestMethod]
+    public void WindowPlacementsAreSavedIndependentlyAndFitAChangedWorkArea()
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            var directory = Path.Combine(Path.GetTempPath(), $"OneBox-window-layout-test-{Guid.NewGuid():N}");
+            try
+            {
+                Directory.CreateDirectory(directory);
+                var path = Path.Combine(directory, "layout-settings.json");
+                var settings = new LayoutSettings(path);
+                foreach (var kind in Enum.GetValues<LayoutSettings.WindowKind>())
+                {
+                    var window = new Window
+                    {
+                        Width = 750 + (int)kind * 50,
+                        Height = 500,
+                        Left = 50,
+                        Top = 40,
+                        WindowStartupLocation = WindowStartupLocation.Manual
+                    };
+                    settings.TrackWindow(window, kind);
+                    new WindowInteropHelper(window).EnsureHandle();
+                    Assert.IsFalse(window.IsVisible);
+                    window.Close();
+                }
+
+                var state = JsonSerializer.Deserialize<LayoutSettings.LayoutState>(File.ReadAllText(path))!;
+                Assert.IsLessThan(state.Settings!.Width, state.Main!.Width);
+                Assert.IsLessThan(state.Compose!.Width, state.Settings.Width);
+
+                var recorded = new LayoutSettings.WindowLayout(-1800, 100, 1400, 900, "disconnected", true);
+                var workArea = new System.Drawing.Rectangle(0, 0, 1200, 800);
+                Assert.AreEqual(workArea, LayoutSettings.FitWindowBounds(recorded, workArea));
+                var inside = recorded with { Left = 100, Width = 800, Height = 500 };
+                Assert.AreEqual(new System.Drawing.Rectangle(100, 100, 800, 500), LayoutSettings.FitWindowBounds(inside, workArea));
+            }
+            catch (Exception error) { failure = error; }
+            finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.IsTrue(thread.Join(TimeSpan.FromSeconds(15)), "窗口布局保存检查超时");
+        if (failure is not null) Assert.Fail(failure.ToString());
+    }
+
     [TestMethod]
     public void ActualMainWindowMarkupFitsDesktopWidthsAndFailureStatesWithoutOpeningWindow()
     {
@@ -54,8 +169,12 @@ public sealed class LayoutTests
                         viewModel.Accounts.Add(new Account(Guid.NewGuid(), "example@163.com", "测试账号", ProviderKind.NetEase));
                         var message = new MailMessage(viewModel.Accounts[0].Id, "1", "INBOX", "这是一封用于核对阅读布局的邮件", "测试发件人",
                             "sender@example.com", "example@163.com", DateTimeOffset.UtcNow, "邮件摘要", false, true, true, "邮件正文");
-                        var readMessage = message with { ServerId = "2", FromName = "已读发件人", IsRead = true, Preview = "", TextBody = null };
-                        viewModel.ShowMessages(state is "reading" or "inbox" ? new[] { message, readMessage } : Array.Empty<MailMessage>());
+                        var secondAccount = new Account(Guid.NewGuid(), "another@gmail.com", "另一个账号", ProviderKind.GmailImap);
+                        viewModel.Accounts.Add(secondAccount);
+                        viewModel.Accounts.Add(new Account(Guid.NewGuid(), "another@qq.com", "QQ邮箱", ProviderKind.Qq));
+                        viewModel.Accounts.Add(new Account(Guid.NewGuid(), "oauth@gmail.com", "Gmail", ProviderKind.Gmail));
+                        var readMessage = message with { AccountId = secondAccount.Id, ServerId = "2", FromName = "已读发件人", IsRead = true, Preview = "", TextBody = null };
+                        viewModel.ShowMessages(state is "reading" or "inbox" ? new[] { message, readMessage } : Array.Empty<MailMessage>(), showAccount: true);
                         viewModel.ShowMessage(state == "reading" ? message : null);
                         foreach (var expander in FindChildren<Expander>(grid)) expander.IsExpanded = state == "expanded";
                         grid.Measure(new Size(width, 640));
@@ -103,6 +222,13 @@ public sealed class LayoutTests
                             Assert.AreEqual(bodyHeight, plainBody.ActualHeight, "加载提示不应改变正文区域高度");
                             viewModel.IsBodyLoading = false;
                             var attachmentButton = (Button)grid.FindName("AttachmentButton");
+                            var saveImagesButton = (Button)grid.FindName("SaveImagesButton");
+                            Assert.IsTrue(attachmentButton.IsEnabled);
+                            Assert.IsFalse(saveImagesButton.IsEnabled);
+                            viewModel.ShowMessage(message with { HasAttachments = false, HtmlBody = "<img src=\"https://example.test/remote.png\">" });
+                            Assert.IsFalse(attachmentButton.IsEnabled);
+                            Assert.IsFalse(saveImagesButton.IsEnabled);
+                            viewModel.ShowMessage(message);
                             viewModel.IsDownloadingAttachments = true;
                             grid.UpdateLayout();
                             Assert.IsFalse(attachmentButton.IsEnabled, "下载中仍允许重复触发");
@@ -128,20 +254,29 @@ public sealed class LayoutTests
                             Assert.AreEqual(Visibility.Collapsed, readerPage.Visibility);
                             if (state == "inbox")
                             {
-                                var unreadSender = FindChildren<TextBlock>(messageList).Single(item => item.Text == "测试发件人");
-                                var readSender = FindChildren<TextBlock>(messageList).Single(item => item.Text == "已读发件人");
+                                var accounts = (ListBox)grid.FindName("AccountsList");
+                                var iconKeyList = new[] { "NetEaseMailIcon", "GmailIcon", "QqMailIcon", "GmailIcon" };
+                                for (var index = 0; index < iconKeyList.Length; index++)
+                                {
+                                    var accountItem = (ListBoxItem)accounts.ItemContainerGenerator.ContainerFromIndex(index);
+                                    var providerIcon = FindChildren<Image>(accountItem).Single();
+                                    Assert.AreSame(grid.Resources[iconKeyList[index]], providerIcon.Source);
+                                    Assert.IsGreaterThan(0d, providerIcon.Source.Width);
+                                }
+                                var unreadAccount = FindChildren<TextBlock>(messageList).Single(item => item.Text == "example@163.com");
+                                var readAccount = FindChildren<TextBlock>(messageList).Single(item => item.Text == "another@gmail.com");
                                 var row = viewModel.Messages[0];
                                 var container = (ListBoxItem)messageList.ItemContainerGenerator.ContainerFromItem(row);
                                 var subject = FindChildren<TextBlock>(container).Single(item => item.Text == message.Subject);
-                                Assert.AreEqual(FontWeights.SemiBold, unreadSender.FontWeight, "未读发件人未加粗");
+                                Assert.AreEqual(FontWeights.SemiBold, unreadAccount.FontWeight, "未读邮件的邮箱账号未加粗");
                                 Assert.AreEqual(FontWeights.SemiBold, subject.FontWeight, "未读主题未加粗");
                                 Assert.AreSame(grid.Resources["InkBrush"], subject.Foreground);
-                                Assert.AreEqual(FontWeights.Normal, readSender.FontWeight, "已读发件人仍然加粗");
+                                Assert.AreEqual(FontWeights.Normal, readAccount.FontWeight, "已读邮件的邮箱账号仍然加粗");
                                 row.UpdateFlags(true, false);
                                 grid.UpdateLayout();
-                                Assert.AreEqual(FontWeights.Normal, unreadSender.FontWeight, "已读样式没有即时更新");
+                                Assert.AreEqual(FontWeights.Normal, unreadAccount.FontWeight, "已读样式没有即时更新");
                                 Assert.AreEqual(FontWeights.Normal, subject.FontWeight, "已读主题仍然加粗");
-                                Assert.AreSame(grid.Resources["MutedBrush"], unreadSender.Foreground);
+                                Assert.AreSame(grid.Resources["MutedBrush"], unreadAccount.Foreground);
                                 Assert.AreSame(grid.Resources["MutedBrush"], subject.Foreground);
                                 var starButton = FindChildren<Button>(messageList).First(item => item.DataContext == viewModel.Messages[0]);
                                 var starImage = (Image)starButton.Content;

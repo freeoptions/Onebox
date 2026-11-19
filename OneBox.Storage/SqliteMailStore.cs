@@ -220,7 +220,10 @@ public sealed class SqliteMailStore(string databasePath) : IMailStore
                 ON CONFLICT(account_id,server_id) DO UPDATE SET
                     folder_id=$folder,subject=$subject,from_name=$fromName,from_address=$fromAddress,
                     to_addresses=$to,received_at=$date,preview=$preview,is_read=$read,
-                    is_starred=$starred,has_attachments=$attachments,
+                    is_starred=$starred,
+                    has_attachments=CASE WHEN $text IS NULL AND $html IS NULL
+                        AND (messages.text_body IS NOT NULL OR messages.html_body IS NOT NULL)
+                        THEN MAX(messages.has_attachments,$attachments) ELSE $attachments END,
                     text_body=COALESCE($text,messages.text_body),
                     html_body=COALESCE($html,messages.html_body),
                     search_pinyin=CASE WHEN $text IS NULL AND messages.text_body IS NOT NULL THEN messages.search_pinyin ELSE $pinyin END,

@@ -14,7 +14,7 @@ public sealed record NoticeEntry(string Text, string Kind, DateTimeOffset Record
     public bool HasDiagnosticDetails => Kind is "告警" or "失败" && !string.IsNullOrWhiteSpace(Details);
 }
 
-public sealed class MessageRow(MailMessage message, string accountLabel) : INotifyPropertyChanged
+public sealed class MessageRow(MailMessage message, string accountLabel, bool showAccount = false) : INotifyPropertyChanged
 {
     public event PropertyChangedEventHandler? PropertyChanged;
     public MailMessage Message { get; private set; } = message;
@@ -27,6 +27,7 @@ public sealed class MessageRow(MailMessage message, string accountLabel) : INoti
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasAttachments)));
     }
     public string AccountLabel { get; } = accountLabel;
+    public string ListHeading => showAccount ? AccountLabel : FromName;
     public string FromName
     {
         get
@@ -90,6 +91,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string _selectedDateLabel = "";
     private readonly List<NoticeEntry> _noticeList = [];
     private bool _isDownloadingAttachments;
+    private bool _selectedHasAttachments;
     public string NoticeText => _noticeList.Count == 0 ? StatusText : _noticeList[^1].Text;
     public string NoticeKind => _noticeList.Count == 0 ? "状态" : _noticeList[^1].Kind;
     public string NoticeTimeText => _noticeList.Count == 0 ? "" : _noticeList[^1].TimeText;
@@ -109,7 +111,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
         get => _isDownloadingAttachments;
         set { if (Set(ref _isDownloadingAttachments, value)) { OnPropertyChanged(nameof(CanDownloadAttachments)); OnPropertyChanged(nameof(DownloadButtonText)); } }
     }
-    public bool CanDownloadAttachments => HasSelectedMessage && !IsDownloadingAttachments;
+    public bool CanDownloadAttachments => _selectedHasAttachments && !IsDownloadingAttachments;
+    public IReadOnlyList<Uri> SelectedInlineImageList { get; private set; } = [];
+    public bool CanSaveInlineImages => SelectedInlineImageList.Count > 0;
     public string DownloadButtonText => IsDownloadingAttachments ? "正在下载…" : "下载附件";
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -149,7 +153,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool HasSelectedMessage
     {
         get => _hasSelectedMessage;
-        private set { if (Set(ref _hasSelectedMessage, value)) { OnPropertyChanged(nameof(IsListVisible)); OnPropertyChanged(nameof(CanDownloadAttachments)); } }
+        private set { if (Set(ref _hasSelectedMessage, value)) OnPropertyChanged(nameof(IsListVisible)); }
     }
     public bool IsListVisible => !HasSelectedMessage;
     public string SelectedDateText { get => _selectedDateText; private set => Set(ref _selectedDateText, value); }
@@ -188,12 +192,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string EmptyTitle { get => _emptyTitle; set => Set(ref _emptyTitle, value); }
     public string EmptyDescription { get => _emptyDescription; set => Set(ref _emptyDescription, value); }
 
-    public void ShowMessages(IEnumerable<MailMessage> messages)
+    public void ShowMessages(IEnumerable<MailMessage> messages, bool showAccount = false)
     {
         var labelMap = Accounts.ToDictionary(account => account.Id, account => account.Address);
         Messages.Clear();
         foreach (var message in messages)
-            Messages.Add(new MessageRow(message, labelMap.GetValueOrDefault(message.AccountId, "未知账号")));
+            Messages.Add(new MessageRow(message, labelMap.GetValueOrDefault(message.AccountId, "未知账号"), showAccount));
         RefreshMailCounts();
     }
 
@@ -210,6 +214,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         HasSelectedMessage = message is not null;
         _selectedMessageKey = message?.Key;
+        Set(ref _selectedHasAttachments, message?.HasAttachments == true, nameof(CanDownloadAttachments));
+        SelectedInlineImageList = message is null ? [] : InlineImages.GetImageList(message.HtmlBody,
+            message.AccountId, message.ServerId, InlineImages.CacheDirectory);
+        OnPropertyChanged(nameof(CanSaveInlineImages));
         var receivedAt = message?.ReceivedAt.LocalDateTime;
         SelectedDateText = receivedAt?.ToString("yyyy年M月d日 HH:mm") ?? "";
         SelectedDateLabel = receivedAt switch

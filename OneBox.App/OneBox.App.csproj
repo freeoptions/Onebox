@@ -13,6 +13,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="OneBox.Tests" />
     <Resource Include="Assets\onebox.png" />
+    <Resource Include="Assets\mail-*.png" />
     <ProjectReference Include="..\OneBox.Core\OneBox.Core.csproj" />
     <ProjectReference Include="..\OneBox.Storage\OneBox.Storage.csproj" />
     <ProjectReference Include="..\OneBox.Providers\OneBox.Providers.csproj" />
